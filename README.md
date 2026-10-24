@@ -65,6 +65,9 @@ systemctl --user enable --now gpu-orc
 sudo deploy/switch-to-system-unit.sh
 ```
 
+The system unit comes with a polkit rule: its user restarts it without a password
+(`systemctl restart gpu-orc@<user>`), for instance after changing the config.
+
 The config is described in [deploy/config.example.yaml](deploy/config.example.yaml).
 
 ## Development

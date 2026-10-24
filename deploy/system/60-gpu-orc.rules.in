@@ -1,0 +1,9 @@
+// GPU-Orc: the user @SERVICE_USER@ may start, stop and restart gpu-orc@@SERVICE_USER@ without a password
+// (a new config or version only needs a restart, no root).
+polkit.addRule(function (action, subject) {
+    if (action.id == "org.freedesktop.systemd1.manage-units" &&
+        action.lookup("unit") == "gpu-orc@@SERVICE_USER@.service" &&
+        subject.user == "@SERVICE_USER@") {
+        return polkit.Result.YES;
+    }
+});
