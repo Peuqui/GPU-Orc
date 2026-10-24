@@ -1,0 +1,11 @@
+[Unit]
+Description=GPU-Orc: frees GPUs on request
+After=network-online.target docker.service
+
+[Service]
+ExecStart=%h/.local/share/gpu-orc/venv/bin/gpu-orc serve --config %h/.config/gpu-orc/config.yaml
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

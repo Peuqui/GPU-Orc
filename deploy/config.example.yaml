@@ -1,0 +1,30 @@
+# GPU-Orc config: copy to ~/.config/gpu-orc/config.yaml and adapt.
+# Listening only on loopback needs no token. To let other machines ask, listen on their network and set
+# token_file (a file with one random line, readable by the service user only).
+listen:
+  host: 127.0.0.1
+  port: 5070
+# token_file: ~/.config/gpu-orc/token
+
+# Longest a /free request may take from its arrival, waiting in the queue included. Callers set their HTTP
+# timeout to at least this plus 30 s (GET /health reports both).
+free_timeout_s: 660
+
+consumers:
+  - name: stt-suite
+    type: stt-suite
+    url: http://127.0.0.1:5080
+    busy_wait_s: 600          # wait this long for a running transcription
+    force_after_wait: true    # then have the service end its GPU worker
+
+  - name: tts-suite
+    type: tts-suite
+    url: http://127.0.0.1:5090
+    # A reading holds an engine: refused_busy. The service has no force.
+
+  - name: llama-swap
+    type: llama-swap
+    url: http://127.0.0.1:11435
+    config_file: ~/.config/llama-swap/config.yaml
+    # Models that keep room for the persistent ones by calibration and evict nothing.
+    no_eviction_models: ["*-vlm-*"]

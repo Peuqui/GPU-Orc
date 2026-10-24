@@ -1,0 +1,17 @@
+# GPU-Orc as a system service for one user: systemctl enable --now gpu-orc@<user>
+# Runs at boot without a login, so callers find it before their first model load. Uses the user's own
+# files: ~/.local/share/gpu-orc (venv), ~/.config/gpu-orc (config, token).
+[Unit]
+Description=GPU-Orc frees GPUs on request for %i
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=%i
+ExecStart=/home/%i/.local/share/gpu-orc/venv/bin/gpu-orc serve --config /home/%i/.config/gpu-orc/config.yaml
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

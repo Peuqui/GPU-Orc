@@ -1,0 +1,45 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "gpu-orc"
+version = "0.1.0"
+description = "Frees GPUs on request by asking the services that hold them to let go"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    # The HTTP side is the standard library; YAML is the format of the config and of llama-swap's.
+    "PyYAML",
+]
+
+[project.optional-dependencies]
+# What `pytest` needs besides the service itself.
+test = [
+    "pytest",
+]
+dev = [
+    "gpu-orc[test]",
+    "ruff",
+    "mypy",
+    "types-PyYAML",
+]
+
+[project.scripts]
+gpu-orc = "gpu_orc.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/gpu_orc"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.mypy]
+python_version = "3.12"
+mypy_path = "src"
+strict = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
