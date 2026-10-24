@@ -25,4 +25,9 @@ if [ ! -e "$CONFIG_FILE" ]; then
     echo "Wrote $CONFIG_FILE from the example: check its consumers."
 fi
 echo "Installed $REPO to $VENV."
-echo "Next: systemctl --user enable --now gpu-orc   (or, to run at boot: sudo $REPO/deploy/switch-to-system-unit.sh)"
+# The system unit and the user unit share the port: once the system unit is set up, never start the user unit.
+if systemctl is-enabled --quiet "gpu-orc@$USER" 2>/dev/null; then
+    echo "Next: systemctl restart gpu-orc@$USER   (the system unit runs this code after a restart)"
+else
+    echo "Next: systemctl --user enable --now gpu-orc   (or, to run at boot: sudo $REPO/deploy/switch-to-system-unit.sh)"
+fi
