@@ -10,10 +10,10 @@ from typing import Any
 
 import yaml
 
+from .consumers.gpu_release import GpuRelease
 from .consumers.llama_swap import LlamaSwap
-from .consumers.stt_suite import SttSuite
-from .consumers.tts_suite import TtsSuite
 from .model import Consumer
+from .verify import DEFAULT_VERIFY, VerifySettings
 
 DEFAULT_PORT = 5070
 DEFAULT_FREE_TIMEOUT_S = 660.0
@@ -29,6 +29,7 @@ class Config:
     port: int
     token: str | None
     free_timeout_s: float
+    verify: VerifySettings
     consumers: tuple[Consumer, ...]
 
 
@@ -45,6 +46,11 @@ def load_config(path: Path) -> Config:
     if token is None and not _is_loopback(host):
         raise ConfigError(f"listen.host {host!r} is not loopback: token_file is required")
     free_timeout_s = float(_get(data, "free_timeout_s", (int, float), "config", DEFAULT_FREE_TIMEOUT_S))
+    defaults = DEFAULT_VERIFY
+    verify = VerifySettings(
+        timeout_s=float(_get(data, "verify_timeout_s", (int, float), "config", defaults.timeout_s)),
+        min_freed_mib=_get(data, "min_freed_mib", int, "config", defaults.min_freed_mib),
+    )
     entries = data.get("consumers")
     if not isinstance(entries, list) or not entries:
         raise ConfigError("consumers: a non-empty list is required")
@@ -52,7 +58,7 @@ def load_config(path: Path) -> Config:
     names = [consumer.name for consumer in consumers]
     if len(set(names)) != len(names):
         raise ConfigError(f"consumers: names must be unique, got {names}")
-    return Config(host, port, token, free_timeout_s, consumers)
+    return Config(host, port, token, free_timeout_s, verify, consumers)
 
 
 def _consumer(entry: Mapping[str, Any]) -> Consumer:
@@ -68,20 +74,12 @@ def _consumer(entry: Mapping[str, Any]) -> Consumer:
     return builder(name, entry)
 
 
-def _stt_suite(name: str, entry: Mapping[str, Any]) -> Consumer:
-    return SttSuite(
+def _gpu_release(name: str, entry: Mapping[str, Any]) -> Consumer:
+    return GpuRelease(
         name=name,
         url=_url(entry, name),
         busy_wait_s=float(_get(entry, "busy_wait_s", (int, float), name, 0)),
         force_after_wait=_get(entry, "force_after_wait", bool, name, False),
-    )
-
-
-def _tts_suite(name: str, entry: Mapping[str, Any]) -> Consumer:
-    return TtsSuite(
-        name=name,
-        url=_url(entry, name),
-        busy_wait_s=float(_get(entry, "busy_wait_s", (int, float), name, 0)),
     )
 
 
@@ -98,13 +96,11 @@ def _llama_swap(name: str, entry: Mapping[str, Any]) -> Consumer:
 
 
 _BUILDERS: dict[str, Callable[[str, Mapping[str, Any]], Consumer]] = {
-    "stt-suite": _stt_suite,
-    "tts-suite": _tts_suite,
+    "gpu-release": _gpu_release,
     "llama-swap": _llama_swap,
 }
 _FIELDS: dict[str, tuple[str, ...]] = {
-    "stt-suite": ("url", "busy_wait_s", "force_after_wait"),
-    "tts-suite": ("url", "busy_wait_s"),
+    "gpu-release": ("url", "busy_wait_s", "force_after_wait"),
     "llama-swap": ("url", "config_file", "no_eviction_models"),
 }
 

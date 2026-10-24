@@ -11,6 +11,7 @@ from typing import Any, Literal
 from .gate import FifoGate
 from .gpus import Gpu, GpuSpecError, query_gpus, resolve_gpu
 from .model import Action, Consumer, ConsumerError, Holder, ModelServer, UnknownModel
+from .verify import DEFAULT_VERIFY, StillHeld, VerifySettings, verify
 
 # How much longer than the overall limit a caller's HTTP timeout should be (answer, nvidia-smi).
 CALLER_MARGIN_S = 30.0
@@ -50,10 +51,12 @@ class Orchestrator:
         consumers: Sequence[Consumer],
         free_timeout_s: float,
         query: Callable[[], list[Gpu]] = query_gpus,
+        verify_settings: VerifySettings = DEFAULT_VERIFY,
     ) -> None:
         self._consumers = {consumer.name: consumer for consumer in consumers}
         self._free_timeout_s = free_timeout_s
         self._query = query
+        self._verify = verify_settings
         self._gate = FifoGate()
 
     @property
@@ -87,22 +90,44 @@ class Orchestrator:
                 return self._already_running(gpus, targets, started)
             report = self._collect(gpus)
             plan, kept = self._plan(request, server, targets, report.holders)
+            before = self._memory()
+            memory_after: dict[str, int] | None = None
             if not entered:
                 actions = [Action(name, h.item, "timeout", "overall limit reached in the queue")
                            for name, holders in plan.items() for h in holders]
             elif request.dry_run:
                 actions = [Action(name, h.item, "would_release") for name, holders in plan.items() for h in holders]
             else:
-                actions = self._release(plan, request.reason, deadline)
-            actions = self._in_config_order(actions + kept + self._error_actions(report))
+                actions, memory_after = verify(
+                    self._release(plan, request.reason, deadline),
+                    plan,
+                    before,
+                    self._memory,
+                    lambda: self._still_held(gpus),
+                    self._verify,
+                    deadline,
+                )
+            actions = self._in_config_order(actions + kept + self._error_actions(report, request.keep))
             after = report if request.dry_run else self._collect(gpus)
             remaining, _ = self._plan(request, server, targets, after.holders)
+        failed = any(action.outcome in ("not_freed", "error") for action in actions)
+        unknown = _unkept_errors(after, request.keep)
         result = {
             "gpus": [{"index": gpu.index, "uuid": gpu.uuid} for gpu in gpus if gpu.uuid in targets],
             "already_running": False,
             "duration_s": round(time.monotonic() - started, 1),
             "actions": [_action_json(action) for action in actions],
-            "free": not any(remaining.values()) and not after.errors,
+            "memory": [
+                {
+                    "index": gpu.index,
+                    "uuid": gpu.uuid,
+                    "before_mib": before.get(gpu.uuid),
+                    "after_mib": None if memory_after is None else memory_after.get(gpu.uuid),
+                }
+                for gpu in gpus
+                if gpu.uuid in targets
+            ],
+            "free": not any(remaining.values()) and not unknown and not failed,
             "status": self._status_body(self._query(), after, targets),
         }
         _log(request, result)
@@ -189,6 +214,14 @@ class Orchestrator:
                 errors.append({"consumer": name, "detail": str(error)})
         return _Report(holders, errors)
 
+    def _memory(self) -> dict[str, int]:
+        return {gpu.uuid: gpu.memory_used_mib for gpu in self._query()}
+
+    def _still_held(self, gpus: Sequence[Gpu]) -> StillHeld:
+        report = self._collect(gpus)
+        items = frozenset((name, holder.item) for name, holders in report.holders.items() for holder in holders)
+        return StillHeld(items, {error["consumer"]: error["detail"] for error in report.errors})
+
     def _release(self, plan: Mapping[str, Sequence[Holder]], reason: str, deadline: float) -> list[Action]:
         if not plan:
             return []
@@ -206,9 +239,9 @@ class Orchestrator:
         return actions
 
     @staticmethod
-    def _error_actions(report: _Report) -> list[Action]:
+    def _error_actions(report: _Report, keep: Sequence[str]) -> list[Action]:
         """A consumer that could not say what it holds may sit on the cards: say so per request."""
-        return [Action(error["consumer"], "", "error", error["detail"]) for error in report.errors]
+        return [Action(error["consumer"], "", "error", error["detail"]) for error in _unkept_errors(report, keep)]
 
     def _in_config_order(self, actions: list[Action]) -> list[Action]:
         order = {name: index for index, name in enumerate(self._consumers)}
@@ -231,6 +264,12 @@ class Orchestrator:
             "gpus": [_gpu_json(gpu, report.holders) for gpu in gpus if gpu.uuid in uuids],
             "errors": report.errors,
         }
+
+
+def _unkept_errors(report: _Report, keep: Sequence[str]) -> list[dict[str, str]]:
+    """The consumers that could not report, except those the request keeps as a whole: what they hold
+    stays either way (calibration stops the model server, then has the rest cleared)."""
+    return [error for error in report.errors if error["consumer"] not in keep]
 
 
 def _gpu_json(gpu: Gpu, holders: Mapping[str, Sequence[Holder]]) -> dict[str, Any]:

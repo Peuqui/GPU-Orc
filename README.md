@@ -13,13 +13,17 @@ cards, instead of every caller carrying its own copy of that logic.
 ## How it works
 
 - **Consumers** are the services that hold GPUs. Each has a type, one implementation per protocol:
-  - `stt-suite`: speech-to-text workers. While a transcription runs it answers "busy"; GPU-Orc waits
-    up to `busy_wait_s`, then has it end the worker if `force_after_wait` is set.
-  - `tts-suite`: text-to-speech engine containers. A reading in progress refuses the release; there
-    is no force.
+  - `gpu-release`: a service with the common release API of the STT-Suite and the TTS-Suite
+    (`GET /gpu/holders`, `POST /gpu/release`). While an item is busy (a transcription, a reading) the
+    service answers "busy"; GPU-Orc waits up to `busy_wait_s`, then has the service force it if
+    `force_after_wait` is set. The service ends the process or container itself and says `released`
+    only once it is gone.
   - `llama-swap`: a model server. GPU-Orc reads which cards each model uses (`CUDA_VISIBLE_DEVICES`
     in the model's `env`) and which models are persistent (groups with `persistent: true`) from
     llama-swap's own config.
+- **Checked, not believed:** after a release GPU-Orc asks the service again and measures the card
+  memory with nvidia-smi, until `verify_timeout_s`. An item still reported, or memory that did not
+  go down, is `not_freed`.
 - **Who holds what** comes from the services themselves. nvidia-smi only gives total and used memory
   per card, which also works under WSL2, where it lists no processes. Memory nobody reports is shown,
   never touched.

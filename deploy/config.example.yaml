@@ -10,17 +10,25 @@ listen:
 # timeout to at least this plus 30 s (GET /health reports both).
 free_timeout_s: 660
 
+# After a release GPU-Orc checks it: the service no longer reports the item, and the GPU memory went down
+# (by half of what the service reported for it, or by min_freed_mib over its cards where it reported
+# nothing). It measures again until verify_timeout_s, within free_timeout_s. Failing = not_freed.
+# verify_timeout_s: 30
+# min_freed_mib: 256
+
 consumers:
+  # Services with the suites' common release API (GET /gpu/holders, POST /gpu/release).
   - name: stt-suite
-    type: stt-suite
+    type: gpu-release
     url: http://127.0.0.1:5080
     busy_wait_s: 600          # wait this long for a running transcription
-    force_after_wait: true    # then have the service end its GPU worker
+    force_after_wait: true    # then have the service end it (device=auto goes on on the CPU)
 
   - name: tts-suite
-    type: tts-suite
+    type: gpu-release
     url: http://127.0.0.1:5090
-    # A reading holds an engine: refused_busy. The service has no force.
+    busy_wait_s: 20           # wait this long for a reading that holds an engine
+    force_after_wait: true    # then have the service abort it (reading_aborted) and stop the container
 
   - name: llama-swap
     type: llama-swap

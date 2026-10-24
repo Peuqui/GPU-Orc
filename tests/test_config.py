@@ -5,12 +5,12 @@ import pytest
 import yaml
 
 from gpu_orc.config import ConfigError, load_config
+from gpu_orc.consumers.gpu_release import GpuRelease
 from gpu_orc.consumers.llama_swap import LlamaSwap
-from gpu_orc.consumers.stt_suite import SttSuite
 
 CONSUMERS: list[dict[str, Any]] = [
-    {"name": "stt", "type": "stt-suite", "url": "http://127.0.0.1:5080/", "busy_wait_s": 600, "force_after_wait": True},
-    {"name": "tts", "type": "tts-suite", "url": "http://127.0.0.1:5090"},
+    {"name": "stt", "type": "gpu-release", "url": "http://127.0.0.1:5080/", "busy_wait_s": 600, "force_after_wait": True},
+    {"name": "tts", "type": "gpu-release", "url": "http://127.0.0.1:5090", "busy_wait_s": 20},
     {"name": "ls", "type": "llama-swap", "url": "http://127.0.0.1:11435", "config_file": "~/ls.yaml",
      "no_eviction_models": ["*-vlm-*"]},
 ]
@@ -23,10 +23,11 @@ def write(tmp_path: Path, data: dict[str, Any]) -> Path:
 
 
 def test_full_config(tmp_path: Path) -> None:
-    config = load_config(write(tmp_path, {"consumers": CONSUMERS}))
+    config = load_config(write(tmp_path, {"consumers": CONSUMERS, "verify_timeout_s": 20, "min_freed_mib": 300}))
     assert (config.host, config.port, config.token, config.free_timeout_s) == ("127.0.0.1", 5070, None, 660.0)
+    assert (config.verify.timeout_s, config.verify.min_freed_mib) == (20.0, 300)
     stt, _, ls = config.consumers
-    assert isinstance(stt, SttSuite) and isinstance(ls, LlamaSwap)
+    assert isinstance(stt, GpuRelease) and isinstance(ls, LlamaSwap)
     assert (stt.url, stt.busy_wait_s, stt.force_after_wait) == ("http://127.0.0.1:5080", 600.0, True)
     assert str(ls.config_file).endswith("/ls.yaml") and "~" not in str(ls.config_file)
 
@@ -42,8 +43,8 @@ def test_network_listen_needs_a_token(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("consumers, message", [
     ([{"name": "x", "type": "ollama", "url": "http://h"}], "unknown type"),
-    ([{"name": "x", "type": "tts-suite", "url": "http://h", "force_after_wait": True}], "unknown keys"),
-    ([{"name": "x", "type": "tts-suite"}], "url is required"),
+    ([{"name": "x", "type": "gpu-release", "url": "http://h", "force": True}], "unknown keys"),
+    ([{"name": "x", "type": "gpu-release"}], "url is required"),
     ([CONSUMERS[1], CONSUMERS[1]], "unique"),
     ([], "non-empty"),
 ])

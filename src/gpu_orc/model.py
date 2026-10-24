@@ -8,7 +8,9 @@ from typing import Literal, Protocol, runtime_checkable
 
 from .gpus import Gpu
 
-Outcome = Literal["released", "released_forced", "refused_busy", "timeout", "kept", "error", "would_release"]
+Outcome = Literal[
+    "released", "released_forced", "not_freed", "refused_busy", "timeout", "kept", "error", "would_release"
+]
 
 
 @dataclass(frozen=True)

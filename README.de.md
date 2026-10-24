@@ -15,14 +15,17 @@ Karten freiräumt, statt dass jeder Aufrufer eine eigene Kopie dieser Logik mitb
 
 - **Verbraucher** sind die Dienste, die Karten belegen. Jeder hat einen Typ, eine Implementierung je
   Protokoll:
-  - `stt-suite`: Worker für Spracherkennung. Solange eine Transkription läuft, antwortet der Dienst
-    „beschäftigt“. GPU-Orc wartet bis zu `busy_wait_s` und lässt den Worker danach beenden, wenn
-    `force_after_wait` gesetzt ist.
-  - `tts-suite`: Engine-Container für Sprachausgabe. Eine laufende Vorlesung lehnt die Freigabe ab,
-    ein `force` gibt es nicht.
+  - `gpu-release`: ein Dienst mit der gemeinsamen Freigabe-Schnittstelle von STT-Suite und TTS-Suite
+    (`GET /gpu/holders`, `POST /gpu/release`). Solange ein Element arbeitet (Transkription, Vorlesung),
+    antwortet der Dienst „beschäftigt“. GPU-Orc wartet bis zu `busy_wait_s` und lässt den Dienst
+    danach erzwingen, wenn `force_after_wait` gesetzt ist. Der Dienst beendet Prozess oder Container
+    selbst und meldet `released` erst, wenn er weg ist.
   - `llama-swap`: ein Modellserver. GPU-Orc liest aus dessen eigener Config, welche Karten ein Modell
     belegt (`CUDA_VISIBLE_DEVICES` im `env` des Modells) und welche Modelle dauerhaft geladen bleiben
     (Gruppen mit `persistent: true`).
+- **Nachgeprüft, nicht geglaubt:** Nach einer Freigabe fragt GPU-Orc den Dienst erneut und misst den
+  Speicher der Karten mit nvidia-smi nach, bis `verify_timeout_s`. Ein Element, das noch gemeldet
+  wird, oder Speicher, der nicht sinkt, ergibt `not_freed`.
 - **Wer was hält**, melden die Dienste selbst. nvidia-smi liefert nur den gesamten und den belegten
   Speicher je Karte; das geht auch unter WSL2, wo nvidia-smi keine Prozesse nennt. Speicher, den
   niemand meldet, wird angezeigt, aber nie angefasst.
