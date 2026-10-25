@@ -14,7 +14,12 @@ if ! python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 12) else 1)' 
     echo "Python 3.12 or newer is needed; python3 here is $(python3 --version 2>&1)." >&2
     exit 1
 fi
-[ -d "$VENV" ] || python3 -m venv "$VENV"
+# A venv without pip is the remains of a failed creation: made anew. Debian and Ubuntu ship Python
+# without what venv needs for pip (`import venv` works, creating one does not).
+if [ ! -x "$VENV/bin/pip" ] && ! python3 -m venv --clear "$VENV"; then
+    echo "Could not create $VENV: install the venv package of python3 first (Debian/Ubuntu: sudo apt install python3-venv), then run this again." >&2
+    exit 1
+fi
 "$VENV/bin/pip" install --quiet -e "$REPO"
 mkdir -p "$BIN" "$UNITS" "$(dirname "$CONFIG_FILE")"
 ln -sfn "$VENV/bin/gpu-orc" "$BIN/gpu-orc"

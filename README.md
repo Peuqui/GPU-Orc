@@ -56,7 +56,7 @@ GPU-Orc refuses to start on a non-loopback address without a token file.
 
 ## Install
 
-Needs Python 3.12 and `nvidia-smi`.
+Needs Python 3.12 with venv (Debian/Ubuntu: `python3-venv`) and `nvidia-smi`.
 
 ```bash
 deploy/install.sh                       # venv in ~/.local/share/gpu-orc, user unit, first config
