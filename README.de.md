@@ -69,7 +69,8 @@ sudo deploy/switch-to-system-unit.sh
 ```
 
 Zur System-Unit gehört eine Polkit-Regel: Ihr Benutzer startet sie ohne Passwort neu
-(`systemctl restart gpu-orc@<benutzer>`), etwa nach einer Änderung der Config.
+(`systemctl restart gpu-orc@<benutzer>`), etwa nach einer Änderung der Config. Dafür braucht es
+polkit (Debian/Ubuntu: `polkitd`); fehlt es, bricht das Skript ab, bevor es etwas ändert.
 
 Die Config ist in [deploy/config.example.yaml](deploy/config.example.yaml) beschrieben.
 
