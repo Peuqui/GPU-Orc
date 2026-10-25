@@ -69,11 +69,12 @@ Errors always come as `{"error": "<text>"}`. An unknown path gives `404`.
       "memory_total_mib": 49152,
       "memory_used_mib": 31200,
       "holders": [
-        {"consumer": "llama-swap", "item": "<model>", "memory_mib": null, "busy": null, "persistent": false},
-        {"consumer": "stt-suite", "item": "gpu-worker", "memory_mib": 3100, "busy": false, "persistent": null},
-        {"consumer": "tts-suite", "item": "<engine>", "memory_mib": 6024, "busy": false, "persistent": null}
+        {"consumer": "llama-swap", "item": "<model>", "memory_mib": null, "busy": null, "persistent": false, "memory_fraction": 0.6},
+        {"consumer": "stt-suite", "item": "gpu-worker", "memory_mib": 3100, "busy": false, "persistent": null, "memory_fraction": null},
+        {"consumer": "tts-suite", "item": "<engine>", "memory_mib": 6024, "busy": false, "persistent": null, "memory_fraction": null}
       ],
-      "unattributed_mib": null
+      "unattributed_mib": null,
+      "available_mib": 10537
     }
   ],
   "errors": []
@@ -87,9 +88,17 @@ Errors always come as `{"error": "<text>"}`. An unknown path gives `404`.
     the STT-Suite for the GPU worker (not for diarization). llama-swap reports only the GPUs, so `null`.
   - `busy` is reported only by the suites (a transcription, a reading, a start), `persistent` only by
     the model server (member of a group with `persistent: true`). The other field is `null`.
+  - `memory_fraction` is the share of each of its GPUs an item may fill, allocated yet or not: for
+    llama-swap the `--gpu-memory-utilization` of a vLLM model in its `cmd`, otherwise `null`.
 - `unattributed_mib` is the used memory minus what the holders report. It is a number only when every
   holder on the GPU reports its memory, otherwise `null`. On a GPU without holders it is all of the
   used memory. GPU-Orc never touches what nobody reports.
+- `available_mib` is what another program may still take on the GPU: its memory minus the larger of
+  the used memory and "shares (`memory_fraction` × GPU memory) plus the memory the other holders
+  report". A vLLM model allocates part of its share only while it computes; nvidia-smi shows it as
+  free in between, and whoever takes it leaves the model without memory at its next step
+  (2026-10-25). The suites choose their GPU by this value. `null` while a consumer is in `errors`:
+  then nobody knows what is free.
 - `errors` names consumers that could not say what they hold (`[{"consumer": …, "detail": …}]`);
   their holders are then missing from `holders`.
 - `500` when nvidia-smi fails.

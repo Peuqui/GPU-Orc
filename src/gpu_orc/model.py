@@ -24,6 +24,9 @@ class Holder:
     memory_mib: Mapping[str, int] = field(default_factory=dict)
     busy: bool | None = None
     persistent: bool | None = None
+    # Share of each of its cards the item may fill while it runs, allocated yet or not (vLLM's
+    # --gpu-memory-utilization): memory nvidia-smi shows as free there is not free for others.
+    memory_fraction: float | None = None
 
 
 @dataclass(frozen=True)

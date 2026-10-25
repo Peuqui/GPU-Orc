@@ -3,12 +3,14 @@
 ``/running`` lists the loaded models; their GPUs come from ``CUDA_VISIBLE_DEVICES`` in the model's
 ``env`` in llama-swap's own config. Members of groups with ``persistent: true`` stay loaded when
 another model starts, so they are the ones GPU-Orc must take down before a load. Other models
-llama-swap swaps out by itself.
+llama-swap swaps out by itself. A vLLM model may fill ``--gpu-memory-utilization`` of each of its
+cards (its ``cmd``) whether that memory is allocated yet or not.
 """
 
 from __future__ import annotations
 
 import fnmatch
+import re
 import time
 import urllib.parse
 from collections.abc import Sequence
@@ -22,6 +24,8 @@ from ..gpus import Gpu, visible_gpu_uuids
 from ..http_json import request_json, request_status
 from ..model import Action, ConsumerError, Holder, UnknownModel
 
+_GPU_MEMORY_UTILIZATION = re.compile(r"--gpu-memory-utilization[=\s]+([0-9]*\.?[0-9]+)")
+
 
 @dataclass
 class LlamaSwap:
@@ -31,7 +35,7 @@ class LlamaSwap:
     no_eviction_models: Sequence[str] = field(default_factory=list)
 
     def holders(self, gpus: Sequence[Gpu]) -> list[Holder]:
-        models, persistent = self._read_config()
+        models, persistent, fractions = self._read_config()
         holders = []
         for model in self._running():
             if model not in models:
@@ -40,7 +44,8 @@ class LlamaSwap:
                 cards = visible_gpu_uuids(models[model], gpus)
             except ValueError as error:
                 raise ConsumerError(f"{self.name}: {model}: {error}") from error
-            holders.append(Holder(consumer=self.name, item=model, gpu_uuids=cards, persistent=model in persistent))
+            holders.append(Holder(consumer=self.name, item=model, gpu_uuids=cards, persistent=model in persistent,
+                                  memory_fraction=fractions.get(model)))
         return holders
 
     def release(self, holders: Sequence[Holder], *, reason: str, deadline: float) -> list[Action]:
@@ -63,13 +68,13 @@ class LlamaSwap:
         return model in self._running()
 
     def model_gpu_uuids(self, model: str, gpus: Sequence[Gpu]) -> frozenset[str]:
-        models, _ = self._read_config()
+        models, _, _ = self._read_config()
         if model not in models:
             raise UnknownModel(model)
         return visible_gpu_uuids(models[model], gpus)
 
     def evicts_persistent(self, model: str) -> bool:
-        _, persistent = self._read_config()
+        _, persistent, _ = self._read_config()
         if model in persistent:
             return False
         return not any(fnmatch.fnmatchcase(model, pattern) for pattern in self.no_eviction_models)
@@ -80,23 +85,32 @@ class LlamaSwap:
             raise ConsumerError(f"{self.name}: /running answered HTTP {status}")
         return [entry["model"] for entry in body.get("running") or [] if entry.get("model")]
 
-    def _read_config(self) -> tuple[dict[str, dict[str, str]], frozenset[str]]:
-        """Environment per model and the members of persistent groups. Read on every call: the
-        config changes while the server runs (calibration, new models)."""
+    def _read_config(self) -> tuple[dict[str, dict[str, str]], frozenset[str], dict[str, float]]:
+        """Environment per model, the members of persistent groups and the share of its cards each vLLM
+        model may fill. Read on every call: the config changes while the server runs (calibration, new
+        models)."""
         try:
             config: Any = yaml.safe_load(self.config_file.read_text(encoding="utf-8"))
         except (OSError, yaml.YAMLError) as error:
             raise ConsumerError(f"{self.name}: cannot read {self.config_file}: {error}") from error
-        models = {name: _env(entry) for name, entry in (config.get("models") or {}).items()}
+        entries = (config.get("models") or {}).items()
+        models = {name: _env(entry) for name, entry in entries}
+        fractions = {name: fraction for name, entry in entries if (fraction := _memory_fraction(entry)) is not None}
         persistent = frozenset(
             member
             for group in (config.get("groups") or {}).values()
             if group.get("persistent")
             for member in group.get("members") or []
         )
-        return models, persistent
+        return models, persistent, fractions
 
 
 def _env(entry: dict[str, Any]) -> dict[str, str]:
     pairs = (item.split("=", 1) for item in entry.get("env") or [] if isinstance(item, str) and "=" in item)
     return {key.strip(): value.strip() for key, value in pairs}
+
+
+def _memory_fraction(entry: dict[str, Any]) -> float | None:
+    """vLLM's ``--gpu-memory-utilization`` in the model's ``cmd``; ``None`` for a model without it."""
+    match = _GPU_MEMORY_UTILIZATION.search(str(entry.get("cmd") or ""))
+    return float(match.group(1)) if match else None

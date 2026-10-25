@@ -36,7 +36,7 @@ cards, instead of every caller carrying its own copy of that logic.
 | Endpoint | Purpose |
 |---|---|
 | `GET /health` | version, `free_timeout_s` and the HTTP timeout callers should use |
-| `GET /status` | per GPU: memory, holders, unattributed memory; the queue; consumers that could not report |
+| `GET /status` | per GPU: memory, holders, unattributed memory, what other programs may still take (`available_mib`); the queue; consumers that could not report |
 | `POST /free` | free GPUs: `{"gpus": [0, "GPU-…"] \| "all", ...}` or `{"model": "<name>", ...}` |
 
 `POST /free` takes exactly one of two forms, plus `reason` (required), `keep` and `dry_run`:

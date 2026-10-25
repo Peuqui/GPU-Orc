@@ -300,4 +300,21 @@ def test_status_attributes_memory_only_where_reported() -> None:
     assert by_index[0]["unattributed_mib"] == 400      # 1000 used, 600 reported
     assert by_index[1]["unattributed_mib"] is None     # llama-swap reports no memory
     assert by_index[2]["unattributed_mib"] == 0 and by_index[2]["holders"] == []
+    assert [g["available_mib"] for g in status["gpus"]] == [49152 - 1000, 32768 - 500, 49152]   # what is not in use
     assert status["queue"] == {"running": False, "waiting": 0, "running_since_s": None}
+
+
+def test_available_leaves_a_model_the_share_it_may_fill() -> None:
+    vllm = Holder("ls", "main", frozenset({A, B}), memory_fraction=0.9)
+    tts = service("tts", Holder("tts", "qwen", frozenset({A}), memory_mib={A: 600}))
+    by_index = {g["index"]: g for g in make(tts, server(vllm)).status()["gpus"]}
+    # nvidia-smi shows 48152 and 32268 MiB free; most of that the model may fill while it computes.
+    assert by_index[0]["available_mib"] == 49152 - (round(0.9 * 49152) + 600)
+    assert by_index[1]["available_mib"] == 32768 - round(0.9 * 32768)
+    assert by_index[2]["available_mib"] == 49152
+    assert [(h["item"], h["memory_fraction"]) for h in by_index[0]["holders"]] == [("qwen", None), ("main", 0.9)]
+
+
+def test_without_every_consumer_nobody_can_say_what_is_available() -> None:
+    status = make(service("tts", fail=True), server()).status()
+    assert [g["available_mib"] for g in status["gpus"]] == [None, None, None]
