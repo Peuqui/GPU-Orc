@@ -24,7 +24,7 @@ def write(tmp_path: Path, data: dict[str, Any]) -> Path:
 
 def test_full_config(tmp_path: Path) -> None:
     config = load_config(write(tmp_path, {"consumers": CONSUMERS, "verify_timeout_s": 20, "min_freed_mib": 300}))
-    assert (config.host, config.port, config.token, config.free_timeout_s) == ("127.0.0.1", 5070, None, 660.0)
+    assert (config.host, config.port, config.token, config.free_timeout_s) == ("127.0.0.1", 5070, None, 180.0)
     assert (config.verify.timeout_s, config.verify.min_freed_mib) == (20.0, 300)
     stt, _, ls = config.consumers
     assert isinstance(stt, GpuRelease) and isinstance(ls, LlamaSwap)

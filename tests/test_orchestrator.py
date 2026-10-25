@@ -149,6 +149,23 @@ def test_ok_but_memory_kept_is_not_freed() -> None:
     assert result["free"] is False
 
 
+def test_a_card_that_held_nothing_yet_cannot_go_down() -> None:
+    # Found live (25.10.): a TTS start withdrawn before its container had a CUDA context; the card stayed at 0 MiB.
+    m = Machine()
+    m.used[A] = 0
+    tts = service("tts", Holder("tts", "xtts", frozenset({A})), machine=None)
+    result = make(tts, server(), machine=m).free(FreeRequest(reason="t", gpus=(0,)))
+    assert outcomes(result) == [("tts", "xtts", "released")] and result["free"] is True
+
+
+def test_a_card_with_little_in_use_must_give_that_back() -> None:
+    m = Machine()
+    m.used[A] = 100
+    tts = service("tts", Holder("tts", "xtts", frozenset({A})), machine=m, keeps_memory=True)
+    action = make(tts, server(), machine=m).free(FreeRequest(reason="t", gpus=(0,)))["actions"][0]
+    assert action["outcome"] == "not_freed" and "−0 MiB over 1 card(s), expected at least −100" in action["detail"]
+
+
 def test_memory_returned_late_by_the_driver_still_passes() -> None:
     m = Machine()
 

@@ -2,7 +2,8 @@
 
 A released item passes when (a) its service no longer reports it and (b) the GPU memory went down:
 by at least half of what the service reported for it, or, where it reported nothing, by at least
-``min_freed_mib`` over its cards together. The driver often returns memory a second or two after the
+``min_freed_mib`` over its cards together (at most what was in use there before: a container that had no
+CUDA context yet leaves nothing to go down). The driver often returns memory a second or two after the
 process ended, so the check is repeated until it passes or the time is up.
 """
 
@@ -115,6 +116,8 @@ def _memory(
     if not holder.gpu_uuids:
         return ""
     freed = sum(max(0, drop.get(uuid, 0)) for uuid in holder.gpu_uuids)
-    if freed >= min_freed_mib:
+    # A card cannot give back more than was in use (found live: a TTS start withdrawn before its CUDA context).
+    needed = min(min_freed_mib, sum(before.get(uuid, 0) for uuid in holder.gpu_uuids))
+    if freed >= needed:
         return ""
-    return f"−{freed} MiB over {len(holder.gpu_uuids)} card(s), expected at least −{min_freed_mib}"
+    return f"−{freed} MiB over {len(holder.gpu_uuids)} card(s), expected at least −{needed}"

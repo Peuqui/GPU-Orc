@@ -8,11 +8,12 @@ listen:
 
 # Longest a /free request may take from its arrival, waiting in the queue included. Callers set their HTTP
 # timeout to at least this plus 30 s (GET /health reports both).
-free_timeout_s: 660
+free_timeout_s: 180
 
 # After a release GPU-Orc checks it: the service no longer reports the item, and the GPU memory went down
 # (by half of what the service reported for it, or by min_freed_mib over its cards where it reported
-# nothing). It measures again until verify_timeout_s, within free_timeout_s. Failing = not_freed.
+# nothing, at most what was in use there before). It measures again until verify_timeout_s, within
+# free_timeout_s. Failing = not_freed.
 # verify_timeout_s: 30
 # min_freed_mib: 256
 

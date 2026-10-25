@@ -16,7 +16,7 @@ from .model import Consumer
 from .verify import DEFAULT_VERIFY, VerifySettings
 
 DEFAULT_PORT = 5070
-DEFAULT_FREE_TIMEOUT_S = 660.0
+DEFAULT_FREE_TIMEOUT_S = 180.0
 
 
 class ConfigError(ValueError):
