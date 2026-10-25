@@ -29,7 +29,8 @@ Was der Dienst auf den Karten dieses Rechners hält; Engines auf anderen Rechner
   `NVIDIA_VISIBLE_DEVICES=<uuid>`). Nur ein Container, der wirklich alle Karten sieht, steht auf allen.
 - `memory_mib`: was der Dienst selbst gemessen hat, je Karte; `null`, wenn die Messung fehlt. Die Karte
   hängt nicht davon ab.
-- `busy`: STT eine laufende Transkription, TTS eine laufende Vorlesung, die die Engine hält.
+- `busy`: STT eine laufende Transkription, TTS eine laufende Vorlesung, die die Engine hält, oder ein
+  Start der Engine, der gerade läuft.
 
 ## `POST /gpu/release`
 
@@ -68,9 +69,12 @@ Dienst auch bei einem `409` frei.
 
 ### Besonderheiten, benannt statt still
 
-- **TTS-Abbruch:** Jede Vorlesung, die die Engine hält, endet mit dem Fehler-Frame
-  `{"error": "reading_aborted", "detail": "Vorlesung abgebrochen, die Karte wird gebraucht: <reason>"}`.
-  Das gilt für `POST /speak` und `/speak/stream`. Clients zeigen das so an und lesen auf Wunsch neu
+- **TTS-Abbruch:** Ein Start der Engine, der gerade läuft, wird zurückgezogen: Er gibt vor
+  `docker compose up` oder beim nächsten Poll auf, während das Modell lädt; danach stoppt die Suite den
+  Container wie sonst. Jede Vorlesung, die die Engine hält oder auf ihren Start wartet, endet mit
+  `{"error": "reading_aborted", "detail": "Vorlesung abgebrochen, die Karte wird gebraucht: <reason>"}`:
+  als Fehler-Frame, wenn schon Audio kam, sonst als Antwort mit HTTP 503. Das gilt für `POST /speak` und
+  `/speak/stream`. Ein ausdrücklicher Start über `/engines/<engine>/start` endet als gescheiterter Start. Clients zeigen das so an und lesen auf Wunsch neu
   vor; der Text ist bei ihnen. Neu für die Clients ist nur der Code `reading_aborted`; AIfred setze
   ich um, Agent-Orc seine Seite.
 - **STT-Abbruch:** Heute geht eine laufende Transkription bei `force` verloren (Fehler „GPU worker

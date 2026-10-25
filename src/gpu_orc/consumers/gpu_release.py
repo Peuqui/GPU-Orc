@@ -54,21 +54,24 @@ class GpuRelease:
         pending = [holder.item for holder in holders]
         actions: list[Action] = []
         while True:
-            busy = self._settle(self._ask(pending, False, reason), "released", started, actions)
+            busy = self._settle(self._ask(pending, False, reason, deadline), "released", started, actions)
             if not busy or time.monotonic() >= wait_until:
                 break
             time.sleep(min(POLL_S, max(0.0, wait_until - time.monotonic())))
             pending = busy
         if busy and self.force_after_wait:
-            busy = self._settle(self._ask(busy, True, reason), "released_forced", started, actions)
+            busy = self._settle(self._ask(busy, True, reason, deadline), "released_forced", started, actions)
         # Busy past its own patience = it may not be forced; cut short by the overall limit = timeout.
         left: Outcome = "timeout" if wait_until < started + self.busy_wait_s else "refused_busy"
         actions.extend(Action(self.name, item, left, "still busy", _waited(started)) for item in busy)
         return actions
 
-    def _ask(self, items: Sequence[str], force: bool, reason: str) -> dict[str, tuple[str, str]]:
+    def _ask(self, items: Sequence[str], force: bool, reason: str, deadline: float) -> dict[str, tuple[str, str]]:
         body = {"items": list(items), "force": force, "reason": reason}
-        status, answer = request_json("POST", f"{self.url}/gpu/release", body)
+        # A release ends a process or stops a container, after a forced abort even a start; with the proof and a
+        # `docker kill` that can take longer than a plain HTTP question, so the answer may take up to the deadline.
+        timeout = max(1.0, deadline - time.monotonic())
+        status, answer = request_json("POST", f"{self.url}/gpu/release", body, timeout=timeout)
         results = answer.get("results") if isinstance(answer, dict) else None
         if status not in (200, 409, 500) or not isinstance(results, list):
             raise ConsumerError(f"{self.name}: /gpu/release answered HTTP {status}")

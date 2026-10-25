@@ -4,6 +4,7 @@ from typing import Any
 import pytest
 from fakes import GPUS, FakeService, Route, answers
 
+from gpu_orc import http_json
 from gpu_orc.consumers import gpu_release
 from gpu_orc.consumers.gpu_release import GpuRelease
 from gpu_orc.model import Action, ConsumerError, Holder
@@ -84,6 +85,20 @@ def test_overall_limit_cuts_the_patience_short() -> None:
     started = time.monotonic()
     actions, _ = release({RELEASE: answers(results(("a", "busy"), status=409))}, "a", deadline_s=0.5, busy_wait_s=60)
     assert [a.outcome for a in actions] == ["timeout"] and time.monotonic() - started < 2
+
+
+def test_a_release_may_answer_until_the_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A forced release stops a container and proves it down, maybe with docker kill: more than a plain 10 s question.
+    timeouts: list[float | None] = []
+    real = http_json.request_json
+
+    def request_json(method: str, url: str, body: Any = None, **kwargs: Any) -> tuple[int, Any]:
+        timeouts.append(kwargs.get("timeout"))
+        return real(method, url, body, **kwargs)
+
+    monkeypatch.setattr(gpu_release, "request_json", request_json)
+    release({RELEASE: answers(results(("a", "released")))}, "a", deadline_s=300)
+    assert len(timeouts) == 1 and timeouts[0] is not None and 290 < timeouts[0] <= 300
 
 
 def test_failed_end_is_not_freed() -> None:
