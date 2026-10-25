@@ -50,7 +50,8 @@ Karten freiräumt, statt dass jeder Aufrufer eine eigene Kopie dieser Logik mitb
   - Sonst weichen die Dienste auf seinen Karten und die dauerhaften Modelle des Servers dort. Die
     übrigen Modelle tauscht der Server selbst aus.
 
-Die vollständige Beschreibung steht in [docs/schnittstelle.md](docs/schnittstelle.md).
+Die vollständige Beschreibung steht in [docs/interface.de.md](docs/interface.de.md), die gemeinsame
+Freigabe-Schnittstelle der Suiten in [docs/release-api.de.md](docs/release-api.de.md).
 
 Anfragen über Loopback brauchen kein Token, von anderen Rechnern `Authorization: Bearer <token>`.
 Auf einer Adresse außer Loopback startet GPU-Orc nur mit Token-Datei.

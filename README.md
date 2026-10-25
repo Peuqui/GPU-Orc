@@ -48,7 +48,8 @@ cards, instead of every caller carrying its own copy of that logic.
   - Otherwise services on its cards and the server's persistent models there go. The server swaps
     its other models itself.
 
-The full description (German) is in [docs/schnittstelle.md](docs/schnittstelle.md).
+The full description is in [docs/interface.md](docs/interface.md); the suites' common release API in
+[docs/release-api.md](docs/release-api.md).
 
 Requests over loopback need no token. From other machines they need `Authorization: Bearer <token>`;
 GPU-Orc refuses to start on a non-loopback address without a token file.
