@@ -30,7 +30,7 @@ services that hold GPUs and never ends a process from outside. The hardest step 
   - Only if the model does not run does the request join the queue. There GPU-Orc checks again before
     freeing, as a request ahead of it may have loaded the model meanwhile.
 - **Time limit:** Every `/free` request ends at the latest `free_timeout_s` after it arrived (config,
-  default 660 s), waiting in the queue included.
+  default 180 s), waiting in the queue included.
   - A consumer's wait for "busy" (`busy_wait_s`) and the verification lie *within* this limit. For
     `gpu-release` the wait ends at the latest 5 s before the limit, so the forcing request still fits.
   - Callers set their HTTP timeout to `caller_timeout_s` from `GET /health` (`free_timeout_s` + 30 s),
@@ -53,7 +53,7 @@ Errors always come as `{"error": "<text>"}`. An unknown path gives `404`.
 ### `GET /health`
 
 ```json
-{"status": "ok", "version": "0.2.0", "free_timeout_s": 660.0, "caller_timeout_s": 690.0}
+{"status": "ok", "version": "0.2.0", "free_timeout_s": 180.0, "caller_timeout_s": 210.0}
 ```
 
 ### `GET /status` — who holds what
@@ -199,9 +199,10 @@ Described in [deploy/config.example.yaml](../deploy/config.example.yaml); the fi
 ```yaml
 listen: {host: 127.0.0.1, port: 5070}
 token_file: ~/.config/gpu-orc/token        # required as soon as host is not only loopback
-free_timeout_s: 660                         # longest a /free request may take from its arrival
+free_timeout_s: 180                         # longest a /free request may take from its arrival
 verify_timeout_s: 30                        # measure this long after a release (within free_timeout_s)
 min_freed_mib: 256                          # must go down by this much where the service reports no memory
+                                            # (at most by what was in use before)
 consumers:
   - name: stt-suite
     type: gpu-release

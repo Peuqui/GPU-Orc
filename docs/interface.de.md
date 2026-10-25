@@ -31,7 +31,7 @@ Mittel ist das `force` eines Dienstes, und das nur, wo die Config es erlaubt.
   - Nur wenn das Modell nicht läuft, kommt die Anfrage in die Schlange. Dort prüft GPU-Orc vor dem
     Freiräumen noch einmal, denn eine vorausgehende Anfrage kann es inzwischen geladen haben.
 - **Höchstdauer:** Jede `/free`-Anfrage endet spätestens `free_timeout_s` nach ihrem Eingang (Config,
-  Standard 660 s), die Wartezeit in der Schlange eingeschlossen.
+  Standard 180 s), die Wartezeit in der Schlange eingeschlossen.
   - Die Wartezeit eines Verbrauchers auf „beschäftigt“ (`busy_wait_s`) und die Nachmessung liegen
     *innerhalb* dieser Frist. Bei `gpu-release` endet die Wartezeit spätestens 5 s vor der Frist, damit
     der erzwingende Aufruf noch hineinpasst.
@@ -55,7 +55,7 @@ Fehler kommen immer als `{"error": "<text>"}`. Ein unbekannter Pfad ergibt `404`
 ### `GET /health`
 
 ```json
-{"status": "ok", "version": "0.2.0", "free_timeout_s": 660.0, "caller_timeout_s": 690.0}
+{"status": "ok", "version": "0.2.0", "free_timeout_s": 180.0, "caller_timeout_s": 210.0}
 ```
 
 ### `GET /status` — wer hält was
@@ -205,9 +205,10 @@ Beschrieben in [deploy/config.example.yaml](../deploy/config.example.yaml); die 
 ```yaml
 listen: {host: 127.0.0.1, port: 5070}
 token_file: ~/.config/gpu-orc/token        # Pflicht, sobald host nicht nur Loopback ist
-free_timeout_s: 660                         # Höchstdauer einer /free-Anfrage ab Eingang
+free_timeout_s: 180                         # Höchstdauer einer /free-Anfrage ab Eingang
 verify_timeout_s: 30                        # so lange nach einer Freigabe nachmessen (innerhalb free_timeout_s)
 min_freed_mib: 256                          # so viel muss sinken, wo der Dienst keinen Speicher meldet
+                                            # (höchstens so viel, wie vorher belegt war)
 consumers:
   - name: stt-suite
     type: gpu-release

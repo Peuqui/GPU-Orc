@@ -57,7 +57,7 @@ Answer, always with one result per item:
 |---|---|
 | `released` | The process with the CUDA context has provably ended: STT the worker process is no longer alive, TTS Docker reports the container gone or exited |
 | `not_running` | Nothing ran, nothing to do |
-| `busy` | The item is working and was left alone (without `force`; for the TTS-Suite also with `force` while the engine is starting, see below) |
+| `busy` | Without `force`: the item is working and was left alone |
 | `failed` | Ending was tried, but the proof is missing (`detail` says what still runs) |
 
 Status code: `200` when every item is `released` or `not_running`; `409` when one is `busy` and none
@@ -76,9 +76,11 @@ Status code: `200` when every item is `released` or `not_running`; `409` when on
   otherwise as an answer with HTTP 503. This holds for `POST /speak` and `/speak/stream`. The reading
   does not move on to another engine; clients show the abort and read again on request, the text is
   theirs.
-- **TTS start:** An engine that is starting stays `busy`, also with `force`; its start cannot be called
-  back. If a release falls into an engine's cold start (XTTS takes about 29 s to load), GPU-Orc reports
-  `refused_busy` after the wait, and the GPU stays in use.
+- **TTS start:** With `force` a start of the engine under way is withdrawn: it gives up before
+  `docker compose up`, or at its next check while the model loads, and the container is then killed.
+  Whoever waits for that start gets `reading_aborted`, before the first audio as HTTP 503. An explicit
+  start through `/engines/<engine>/start` fails as "not started (withdrawn)". Measured on the Mini with
+  `busy_wait_s` 5: a cold start released in 8.2 s (`released_forced`), a warm reading in 10.3 s.
 - **STT abort:** After `force`, a running transcription counts as "GPU unavailable".
   - A request with `device=auto` goes on on the CPU; the dictation is kept, only slower.
   - A request with `device=cuda` gets `503` with the reason; the client can repeat it on the CPU.
@@ -99,7 +101,8 @@ After every release GPU-Orc checks the result itself instead of believing the an
    the process ended; GPU-Orc measures again every 0.5 s until `verify_timeout_s` (config, default 30 s).
    - If an item reported its memory, the memory of its GPU must go down by at least half of that.
    - Otherwise it must go down by at least `min_freed_mib` over its GPUs together (config, default
-     256; a CUDA context alone takes more).
+     256; a CUDA context alone takes more), but never by more than was in use on them before: a GPU
+     that was empty before and after (a start withdrawn before it loaded anything) passes.
    - This also works under WSL2.
    - The verification lies *within* `free_timeout_s`, not on top of it. It ends at `verify_timeout_s`
      or at the overall limit, whichever comes first; `caller_timeout_s` from `/health` stays right.

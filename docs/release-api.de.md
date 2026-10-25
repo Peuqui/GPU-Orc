@@ -57,7 +57,7 @@ Antwort, immer mit einem Ergebnis je Element:
 |---|---|
 | `released` | Der Prozess mit dem CUDA-Kontext ist nachweislich beendet: STT der Worker-Prozess lebt nicht mehr, TTS der Container ist laut Docker weg oder beendet |
 | `not_running` | Es lief nichts, nichts zu tun |
-| `busy` | Das Element arbeitet und wurde in Ruhe gelassen (ohne `force`; bei der TTS-Suite auch mit `force`, solange die Engine startet, siehe unten) |
+| `busy` | Ohne `force`: Das Element arbeitet und wurde in Ruhe gelassen |
 | `failed` | Beenden versucht, aber der Nachweis fehlt (`detail` sagt, was noch läuft) |
 
 HTTP-Code: `200`, wenn alle Elemente `released` oder `not_running` sind; `409`, wenn eines `busy` ist
@@ -77,9 +77,12 @@ Dienst auch bei einem `409` frei.
   als Antwort mit HTTP 503. Das gilt für `POST /speak` und `/speak/stream`. Die Vorlesung geht nicht
   auf eine andere Engine über; Clients zeigen den Abbruch an und lesen auf Wunsch neu vor, der Text ist
   bei ihnen.
-- **TTS-Start:** Eine Engine, die gerade startet, bleibt `busy`, auch mit `force`; ihr Start lässt sich
-  nicht zurückrufen. Fällt eine Freigabe in den Kaltstart einer Engine (XTTS lädt etwa 29 s), meldet
-  GPU-Orc nach der Wartezeit `refused_busy`, und die Karte bleibt belegt.
+- **TTS-Start:** Mit `force` wird ein laufender Start der Engine zurückgezogen: Er gibt vor
+  `docker compose up` oder bei seiner nächsten Prüfung während des Ladens auf, danach wird der
+  Container abgeschossen. Wer auf diesen Start wartet, bekommt `reading_aborted`, vor dem ersten Audio
+  als HTTP 503. Ein ausdrücklicher Start über `/engines/<engine>/start` scheitert mit „not started
+  (withdrawn)“. Gemessen auf dem Mini mit `busy_wait_s` 5: ein Kaltstart in 8,2 s freigegeben
+  (`released_forced`), eine warme Vorlesung in 10,3 s.
 - **STT-Abbruch:** Eine laufende Transkription gilt nach `force` als „GPU nicht verfügbar“.
   - Eine Anfrage mit `device=auto` läuft auf der CPU weiter; das Diktat bleibt erhalten, nur langsamer.
   - Eine Anfrage mit `device=cuda` bekommt `503` mit dem Grund; der Client kann auf der CPU wiederholen.
@@ -102,7 +105,9 @@ Nach jeder Freigabe prüft GPU-Orc das Ergebnis selbst, statt der Antwort zu gla
    - Hat ein Element seinen Speicher gemeldet, muss der Speicher seiner Karte um mindestens die
      Hälfte davon sinken.
    - Sonst muss er auf seinen Karten zusammen um mindestens `min_freed_mib` sinken (Config,
-     Standard 256; ein CUDA-Kontext allein belegt mehr).
+     Standard 256; ein CUDA-Kontext allein belegt mehr), aber nie um mehr, als vorher darauf belegt
+     war: Eine Karte, die vorher und nachher leer war (ein Start, der zurückgezogen wurde, bevor er
+     etwas geladen hatte), besteht.
    - Das geht auch unter WSL2.
    - Die Nachmessung liegt *innerhalb* von `free_timeout_s`, nicht obendrauf. Sie endet bei
      `verify_timeout_s` oder beim Gesamtlimit, je nachdem, was früher kommt; `caller_timeout_s` aus
