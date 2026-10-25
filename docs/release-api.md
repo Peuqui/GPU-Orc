@@ -2,7 +2,7 @@
 
 [Deutsch](release-api.de.md)
 
-As of GPU-Orc 0.2.0, with the STT-Suite and the TTS-Suite on their current main branch.
+As of GPU-Orc 0.3.0, with the STT-Suite and the TTS-Suite on their current main branch.
 
 The STT-Suite and the TTS-Suite free their GPUs the same way: the same endpoints, the same status
 codes, the same `force`, the same result fields. GPU-Orc needs one consumer type for them

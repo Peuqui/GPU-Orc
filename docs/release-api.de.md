@@ -2,7 +2,7 @@
 
 [English](release-api.md)
 
-Stand: GPU-Orc 0.2.0, STT-Suite und TTS-Suite auf ihrem aktuellen Hauptzweig.
+Stand: GPU-Orc 0.3.0, STT-Suite und TTS-Suite auf ihrem aktuellen Hauptzweig.
 
 STT-Suite und TTS-Suite geben ihre Grafikkarten auf dieselbe Weise frei: gleiche Endpunkte, gleiche
 Antwortcodes, gleiches `force`, gleiche Ergebnisfelder. GPU-Orc braucht dafür einen einzigen

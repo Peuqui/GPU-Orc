@@ -2,7 +2,7 @@
 
 [Deutsch](interface.de.md)
 
-As of version 0.2.0. The suites' common release API, through which GPU-Orc talks to the STT-Suite and
+As of version 0.3.0. The suites' common release API, through which GPU-Orc talks to the STT-Suite and
 the TTS-Suite, is described in [release-api.md](release-api.md).
 
 GPU-Orc is a small service per machine. It frees GPUs on request and tells who holds what right now.
@@ -53,7 +53,7 @@ Errors always come as `{"error": "<text>"}`. An unknown path gives `404`.
 ### `GET /health`
 
 ```json
-{"status": "ok", "version": "0.2.0", "free_timeout_s": 180.0, "caller_timeout_s": 210.0}
+{"status": "ok", "version": "0.3.0", "free_timeout_s": 180.0, "caller_timeout_s": 210.0}
 ```
 
 ### `GET /status` — who holds what
