@@ -82,6 +82,12 @@ python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
 .venv/bin/ruff check src tests && .venv/bin/mypy src tests
 ```
 
+## Star History
+
+![Star History](https://raw.githubusercontent.com/Peuqui/Traffic/main/data/GPU-Orc/star-history.svg)
+
+<sub>Täglich erhoben in [Peuqui/Traffic](https://github.com/Peuqui/Traffic), zusammen mit Aufrufen und Klonen. GitHub hat die Stargazer-API am 30.06.2026 auf Repo-Admins beschränkt, deshalb brauchen externe Diagramm-Dienste jetzt ein Token mit Schreibrechten.</sub>
+
 ## Lizenz
 
 [PolyForm Noncommercial 1.0.0](LICENSE): Herunterladen und Nutzen für jeden nichtkommerziellen Zweck frei; kommerzielle Nutzung nur mit Erlaubnis des Autors.
