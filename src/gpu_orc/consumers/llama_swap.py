@@ -19,7 +19,7 @@ from typing import Any
 import yaml
 
 from ..gpus import Gpu, visible_gpu_uuids
-from ..http_json import request_json
+from ..http_json import request_json, request_status
 from ..model import Action, ConsumerError, Holder, UnknownModel
 
 
@@ -49,7 +49,7 @@ class LlamaSwap:
             started = time.monotonic()
             model = urllib.parse.quote(holder.item, safe="")
             timeout = max(1.0, deadline - started)
-            status, _ = request_json("POST", f"{self.url}/api/models/unload/{model}", timeout=timeout)
+            status = request_status("POST", f"{self.url}/api/models/unload/{model}", timeout=timeout)
             waited = round(time.monotonic() - started, 1)
             if status != 200:
                 actions.append(Action(self.name, holder.item, "error", f"unload answered HTTP {status}", waited))

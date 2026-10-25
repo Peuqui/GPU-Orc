@@ -1,4 +1,4 @@
-"""JSON over HTTP to the consumers' services (standard library only)."""
+"""HTTP to the consumers' services (standard library only)."""
 
 from __future__ import annotations
 
@@ -16,20 +16,31 @@ def request_json(method: str, url: str, body: Any = None, timeout: float = REQUE
     """Status and decoded JSON body (None when empty). HTTP error statuses are returned, not raised:
     the protocols give some of them a meaning (409 = busy). Raises ConsumerError when the service is
     unreachable or answers something that is not JSON."""
-    data = None if body is None else json.dumps(body).encode()
-    request = urllib.request.Request(url, data=data, method=method)
-    if data is not None:
-        request.add_header("Content-Type", "application/json")
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            status, raw = response.status, response.read()
-    except urllib.error.HTTPError as error:
-        status, raw = error.code, error.read()
-    except (urllib.error.URLError, TimeoutError, OSError) as error:
-        raise ConsumerError(f"{method} {url}: {error}") from error
+    status, raw = _exchange(method, url, body, timeout)
     if not raw.strip():
         return status, None
     try:
         return status, json.loads(raw)
     except json.JSONDecodeError as error:
         raise ConsumerError(f"{method} {url}: answer is not JSON (HTTP {status})") from error
+
+
+def request_status(method: str, url: str, timeout: float = REQUEST_TIMEOUT_S) -> int:
+    """Only the status, for endpoints whose answer body carries no meaning (llama-swap's unload
+    answers the text "OK"). Raises ConsumerError when the service is unreachable."""
+    status, _ = _exchange(method, url, None, timeout)
+    return status
+
+
+def _exchange(method: str, url: str, body: Any, timeout: float) -> tuple[int, bytes]:
+    data = None if body is None else json.dumps(body).encode()
+    request = urllib.request.Request(url, data=data, method=method)
+    if data is not None:
+        request.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return response.status, response.read()
+    except urllib.error.HTTPError as error:
+        return error.code, error.read()
+    except (urllib.error.URLError, TimeoutError, OSError) as error:
+        raise ConsumerError(f"{method} {url}: {error}") from error

@@ -35,7 +35,8 @@ class FakeService:
                 fake.calls.append((method, self.path, body))
                 route = fake.routes.get((method, self.path))
                 status, answer = (404, {"error": "no route"}) if route is None else route(body)
-                data = b"" if answer is None else json.dumps(answer).encode()
+                # bytes go out as they are: some services answer plain text (llama-swap's unload: "OK").
+                data = b"" if answer is None else answer if isinstance(answer, bytes) else json.dumps(answer).encode()
                 self.send_response(status)
                 self.send_header("Content-Length", str(len(data)))
                 self.end_headers()

@@ -72,8 +72,9 @@ def test_eviction_rules(config_file: Path) -> None:
 
 def test_release_checks_that_the_model_is_gone(config_file: Path) -> None:
     routes = {
-        ("POST", "/api/models/unload/describer"): answers((200, None)),
-        ("POST", "/api/models/unload/embedder"): answers((200, None)),
+        # llama-swap answers an unload with the plain text "OK", not JSON.
+        ("POST", "/api/models/unload/describer"): answers((200, b"OK")),
+        ("POST", "/api/models/unload/embedder"): answers((200, b"OK")),
         ("GET", "/running"): answers(running("embedder")),
     }
     holders = [Holder("ls", "describer", frozenset()), Holder("ls", "embedder", frozenset())]
