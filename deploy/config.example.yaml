@@ -21,13 +21,13 @@ consumers:
   - name: stt-suite
     type: gpu-release
     url: http://127.0.0.1:5080
-    busy_wait_s: 600          # wait this long for a running transcription
+    busy_wait_s: 30           # wait this long for a running transcription (a dictation is done in seconds)
     force_after_wait: true    # then have the service end it (device=auto goes on on the CPU)
 
   - name: tts-suite
     type: gpu-release
     url: http://127.0.0.1:5090
-    busy_wait_s: 20           # wait this long for a reading that holds an engine
+    busy_wait_s: 5            # wait this long for a reading that holds an engine or a start
     force_after_wait: true    # then have the service abort it (reading_aborted) and stop the container
 
   - name: llama-swap

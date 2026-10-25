@@ -132,9 +132,11 @@ bestanden sind.
 - `stt-suite` und `tts-suite` entfallen.
 
 **Vorgabe für die Config, als Wert und nicht im Code** (Peuqui legt sie je Rechner fest):
-- TTS: kurz warten, z. B. 20 s, dann `force`. Ein Abbruch kostet wenig, der Text ist da.
-- STT: 600 s warten, dann `force`. Ein Abbruch kann ein Diktat kosten; mit `device=auto` läuft es auf
-  der CPU weiter.
+- TTS: 5 s warten, dann `force`. Ein Abbruch kostet wenig, der Text ist da; ein Kaltstart würde nur zu
+  Ende laden, um danach abgebrochen zu werden.
+- STT: 30 s warten, dann `force`. Ein Diktat ist auf der GPU in Sekunden fertig; eine lange Aufnahme mit
+  `device=auto` transkribiert die Suite danach mit derselben Datei von vorn auf der CPU, es geht nichts
+  verloren (Peuqui 25.10.: keine zehn Minuten warten, bei der TTS sowieso nicht).
 
 **Tests:** Ein Verbraucher, der „ok“ sagt, aber nichts freigibt (Status meldet ihn weiter, oder der
 Speicher sinkt nicht), wird als `not_freed` erkannt. Ebenso die Suiten: Ein Worker oder Container,

@@ -195,12 +195,12 @@ consumers:
   - name: stt-suite
     type: gpu-release
     url: http://127.0.0.1:5080
-    busy_wait_s: 600                        # so lange auf eine laufende Transkription warten
+    busy_wait_s: 30                         # so lange auf eine laufende Transkription warten
     force_after_wait: true                  # danach abbrechen lassen (device=auto läuft auf der CPU weiter)
   - name: tts-suite
     type: gpu-release
     url: http://127.0.0.1:5090
-    busy_wait_s: 20                         # so lange auf eine Vorlesung warten
+    busy_wait_s: 5                          # so lange auf eine Vorlesung oder einen Start warten
     force_after_wait: true                  # danach abbrechen lassen (reading_aborted), Container stoppen
   - name: llama-swap
     type: llama-swap
