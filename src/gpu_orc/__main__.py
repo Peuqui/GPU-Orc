@@ -35,6 +35,7 @@ def main(argv: list[str] | None = None) -> int:
     orchestrator = Orchestrator(
         config.consumers, config.free_timeout_s, verify_settings=config.verify,
         measurements=lambda: measurements.load(store), vision_models=config.vision_models,
+        place_settings=config.place,
     )
     server = GpuOrcServer((config.host, config.port), orchestrator, config.token)
     names = ", ".join(consumer.name for consumer in config.consumers)

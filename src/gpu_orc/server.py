@@ -1,4 +1,4 @@
-"""HTTP interface: GET /health, /status, /profiles, /needs, POST /free, and the web page under /ui/
+"""HTTP interface: GET /health, /status, /profiles, /needs, POST /free, /place, and the web page under /ui/
 (standard library server, one thread per request)."""
 
 from __future__ import annotations
@@ -15,10 +15,11 @@ from typing import Any
 
 from . import __version__
 from .measurements import MeasurementError
-from .orchestrator import FreeRequest, ModelServerUnreachable, NotFound, Orchestrator, RequestError
+from .orchestrator import FreeRequest, ModelServerUnreachable, NotFound, Orchestrator, PlaceRequest, RequestError
 
 MAX_BODY_BYTES = 64 * 1024
 FREE_FIELDS = {"gpus", "model", "model_server", "keep", "reason", "dry_run"}
+PLACE_FIELDS = {"consumer", "item", "need_mib", "reason", "card", "min_compute_cap"}
 # The web page: a flat folder of files, served without a token (they hold no data; every call the page
 # makes for data needs the token like any other caller from outside this machine).
 UI_DIR = Path(__file__).parent / "ui"
@@ -69,15 +70,18 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         if not self._authorized():
             return
-        if self.path != "/free":
-            self._send(HTTPStatus.NOT_FOUND, {"error": f"no such path: {self.path}"})
-            return
+        orchestrator = self.server.orchestrator
         try:
-            request = parse_free_request(self._json_body())
+            if self.path == "/free":
+                free = parse_free_request(self._json_body())
+                self._answer(lambda: orchestrator.free(free))
+            elif self.path == "/place":
+                place = parse_place_request(self._json_body())
+                self._answer(lambda: orchestrator.place(place))
+            else:
+                self._send(HTTPStatus.NOT_FOUND, {"error": f"no such path: {self.path}"})
         except RequestError as error:
             self._send(HTTPStatus.BAD_REQUEST, {"error": str(error)})
-            return
-        self._answer(lambda: self.server.orchestrator.free(request))
 
     def _answer(self, produce: Any) -> None:
         try:
@@ -202,3 +206,26 @@ def parse_free_request(body: Any) -> FreeRequest:
     ):
         raise RequestError('gpus must be "all" or a non-empty list of indices or UUIDs')
     return FreeRequest(reason=reason, gpus=tuple(gpus), keep=tuple(keep), dry_run=dry_run)
+
+
+def parse_place_request(body: Any) -> PlaceRequest:
+    if not isinstance(body, dict):
+        raise RequestError("body must be a JSON object")
+    unknown = set(body) - PLACE_FIELDS
+    if unknown:
+        raise RequestError(f"unknown fields: {sorted(unknown)}")
+    consumer, item, need, reason = body.get("consumer"), body.get("item"), body.get("need_mib"), body.get("reason")
+    if not isinstance(consumer, str) or not consumer or not isinstance(item, str) or not item:
+        raise RequestError("consumer and item must be names")
+    if not isinstance(need, int) or isinstance(need, bool) or need < 0:
+        raise RequestError("need_mib must be a number of MiB")
+    if not isinstance(reason, str) or not reason.strip():
+        raise RequestError("reason is required")
+    card = body.get("card")
+    if card is not None and (isinstance(card, bool) or not isinstance(card, int | str)):
+        raise RequestError("card must be an index or a UUID")
+    compute_cap = body.get("min_compute_cap")
+    if compute_cap is not None and (isinstance(compute_cap, bool) or not isinstance(compute_cap, int | float)):
+        raise RequestError("min_compute_cap must be a number")
+    return PlaceRequest(consumer, item, need, reason, card,
+                        None if compute_cap is None else float(compute_cap))

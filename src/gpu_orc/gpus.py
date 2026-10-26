@@ -16,6 +16,7 @@ class Gpu:
     name: str
     memory_total_mib: int
     memory_used_mib: int
+    compute_cap: float  # CUDA compute capability (7.0 = Volta, 7.5 = Turing)
 
 
 class GpuSpecError(ValueError):
@@ -28,7 +29,7 @@ def query_gpus() -> list[Gpu]:
     result = subprocess.run(
         [
             "nvidia-smi",
-            "--query-gpu=index,uuid,name,memory.total,memory.used",
+            "--query-gpu=index,uuid,name,memory.total,memory.used,compute_cap",
             "--format=csv,noheader,nounits",
         ],
         capture_output=True,
@@ -46,9 +47,9 @@ def parse_gpu_rows(text: str) -> list[Gpu]:
             continue
         parts = [part.strip() for part in line.split(",")]
         # The name may contain a comma; the other fields are fixed at both ends.
-        index, uuid, total, used = parts[0], parts[1], parts[-2], parts[-1]
-        name = ", ".join(parts[2:-2])
-        gpus.append(Gpu(int(index), uuid, name, int(total), int(used)))
+        index, uuid, total, used, compute_cap = parts[0], parts[1], parts[-3], parts[-2], parts[-1]
+        name = ", ".join(parts[2:-3])
+        gpus.append(Gpu(int(index), uuid, name, int(total), int(used), float(compute_cap)))
     return sorted(gpus, key=lambda gpu: gpu.index)
 
 

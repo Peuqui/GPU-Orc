@@ -7,11 +7,11 @@ ALL = frozenset(gpu.uuid for gpu in GPUS)
 
 
 def test_parse_rows_sorted_by_index_and_name_with_comma() -> None:
-    text = "1, GPU-b, Tesla V100, 32GB, 32768, 10\n0, GPU-a, Quadro RTX 8000, 49152, 2000\n"
+    text = "1, GPU-b, Tesla V100, 32GB, 32768, 10, 7.0\n0, GPU-a, Quadro RTX 8000, 49152, 2000, 7.5\n"
     gpus = parse_gpu_rows(text)
     assert [gpu.index for gpu in gpus] == [0, 1]
     assert gpus[1].name == "Tesla V100, 32GB"
-    assert (gpus[1].memory_total_mib, gpus[1].memory_used_mib) == (32768, 10)
+    assert (gpus[1].memory_total_mib, gpus[1].memory_used_mib, gpus[1].compute_cap) == (32768, 10, 7.0)
 
 
 def test_resolve_by_index_uuid_and_unique_prefix() -> None:

@@ -8,15 +8,22 @@ from typing import Any
 
 import pytest
 from fakes import GPUS
-from test_orchestrator import FakeService, model, server
+from test_orchestrator import FakeReporter, model, server
 
 from gpu_orc.orchestrator import Orchestrator, RequestError
-from gpu_orc.server import UI_DIR, GpuOrcServer, authorization_error, parse_free_request, ui_file
+from gpu_orc.server import (
+    UI_DIR,
+    GpuOrcServer,
+    authorization_error,
+    parse_free_request,
+    parse_place_request,
+    ui_file,
+)
 
 
 @pytest.fixture
 def url() -> Iterator[str]:
-    consumers = [FakeService("stt"), server(model("big", GPUS[0].uuid))]
+    consumers = [FakeReporter("stt"), server(model("big", GPUS[0].uuid))]
     httpd = GpuOrcServer(("127.0.0.1", 0), Orchestrator(consumers, 660, query=lambda: list(GPUS)), token=None)
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
@@ -62,6 +69,34 @@ def test_free_errors(url: str, body: dict[str, Any], code: int) -> None:
 
 def test_unknown_path(url: str) -> None:
     assert call(f"{url}/nope")[0] == 404
+    assert call(f"{url}/nope", "POST", {})[0] == 404
+
+
+def test_place(url: str) -> None:
+    status, body = call(f"{url}/place", "POST", {"consumer": "stt", "item": "gpu-worker", "need_mib": 3712,
+                                                  "reason": "dictation", "min_compute_cap": 7.5})
+    assert status == 200 and body["card"] == {"index": 2, "uuid": GPUS[2].uuid} and body["reserved_s"] == 60.0
+    assert call(f"{url}/place", "POST", {"consumer": "ls", "item": "x", "need_mib": 1, "reason": "r"})[0] == 404
+    assert call(f"{url}/place", "POST", {"consumer": "stt", "item": "x", "need_mib": 1, "reason": "r", "card": 9})[0] == 400
+
+
+@pytest.mark.parametrize("body", [
+    [], {"consumer": "stt", "item": "w", "need_mib": 1}, {"consumer": "", "item": "w", "need_mib": 1, "reason": "r"},
+    {"consumer": "stt", "item": "w", "need_mib": -1, "reason": "r"},
+    {"consumer": "stt", "item": "w", "need_mib": True, "reason": "r"},
+    {"consumer": "stt", "item": "w", "need_mib": 1, "reason": "r", "card": [0]},
+    {"consumer": "stt", "item": "w", "need_mib": 1, "reason": "r", "min_compute_cap": "7.5"},
+    {"consumer": "stt", "item": "w", "need_mib": 1, "reason": "r", "keep": []},
+])
+def test_parse_place_rejects(body: Any) -> None:
+    with pytest.raises(RequestError):
+        parse_place_request(body)
+
+
+def test_parse_place_accepts() -> None:
+    request = parse_place_request({"consumer": "tts", "item": "qwen", "need_mib": 6024, "reason": "r", "card": "GPU-a",
+                                   "min_compute_cap": 7})
+    assert (request.item, request.need_mib, request.card, request.min_compute_cap) == ("qwen", 6024, "GPU-a", 7.0)
 
 
 @pytest.mark.parametrize("body", [

@@ -1,17 +1,32 @@
-"""Who holds what, and freeing GPUs: plan from the consumers' own reports, ask them in parallel."""
+"""Who holds what, freeing GPUs (plan from the consumers' own reports, ask them in parallel) and placing a side
+model on a card (see :mod:`gpu_orc.claims`)."""
 
 from __future__ import annotations
 
 import time
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal
 
+from .claims import (
+    DEFAULT_PLACE,
+    CardRoom,
+    Claim,
+    Eviction,
+    PlaceSettings,
+    Reservation,
+    Reservations,
+    choose,
+    model_claim,
+    plan_eviction,
+    side_model_claim,
+    with_reservations,
+)
 from .gate import FifoGate
 from .gpus import Gpu, GpuSpecError, query_gpus, resolve_gpu
 from .measurements import Measurements
-from .model import Action, Consumer, ConsumerError, Holder, ModelServer, Need, NeedsReporter, UnknownModel
+from .model import Action, Consumer, ConsumerError, Holder, ModelServer, Need, SideModelServer, UnknownModel
 from .profiles import Profile
 from .verify import DEFAULT_VERIFY, StillHeld, VerifySettings, verify
 
@@ -42,6 +57,16 @@ class FreeRequest:
 
 
 @dataclass(frozen=True)
+class PlaceRequest:
+    consumer: str
+    item: str
+    need_mib: int
+    reason: str
+    card: int | str | None = None  # only this card (index or UUID)
+    min_compute_cap: float | None = None
+
+
+@dataclass(frozen=True)
 class _Report:
     holders: dict[str, list[Holder]]
     errors: list[dict[str, str]]
@@ -56,6 +81,8 @@ class Orchestrator:
         verify_settings: VerifySettings = DEFAULT_VERIFY,
         measurements: Callable[[], Measurements] = Measurements,
         vision_models: Mapping[str, Sequence[str]] | None = None,
+        place_settings: PlaceSettings = DEFAULT_PLACE,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._consumers = {consumer.name: consumer for consumer in consumers}
         # Read on every call: an import or a measurement counts at once.
@@ -65,6 +92,8 @@ class Orchestrator:
         self._query = query
         self._verify = verify_settings
         self._gate = FifoGate()
+        self._place = place_settings
+        self._reservations = Reservations(clock)
 
     @property
     def free_timeout_s(self) -> float:
@@ -100,7 +129,7 @@ class Orchestrator:
     def needs(self) -> dict[str, Any]:
         """What the side models need on a card: the suites' items as they report them, the vision models
         of the model servers as measured."""
-        reporters = {name: c for name, c in self._consumers.items() if isinstance(c, NeedsReporter)}
+        reporters = {name: c for name, c in self._consumers.items() if isinstance(c, SideModelServer)}
         needs: list[Need] = []
         errors: list[dict[str, str]] = []
         if reporters:
@@ -132,6 +161,12 @@ class Orchestrator:
             # A request ahead in the queue may have loaded the model meanwhile.
             if entered and server is not None and self._running(server, request.model):
                 return self._already_running(gpus, targets, started)
+            loading = (server, request.model) if entered and not request.dry_run and server is not None and \
+                request.model is not None else None
+            if loading is not None:
+                # The cards stay the model's while they are cleared: a side model placed meanwhile would take its room.
+                needs = self._model_needs(*loading, gpus)
+                self._reservations.put(loading[0].name, loading[1], needs, deadline - time.monotonic() + self._place.reserve_s)
             report = self._collect(gpus)
             plan, kept = self._plan(request, server, targets, report.holders)
             before = self._memory()
@@ -174,8 +209,192 @@ class Orchestrator:
             "free": not any(remaining.values()) and not unknown and not failed,
             "status": self._status_body(self._query(), after, targets),
         }
+        if loading is not None:
+            self._reservations.put(loading[0].name, loading[1], needs, self._place.reserve_s)  # the caller loads it next
         _log(request, result)
         return result
+
+    def place(self, request: PlaceRequest) -> dict[str, Any]:
+        """The card a side model may start on, its need promised there for ``reserve_s``: a card it fits on as
+        things are, else one where idle side models of a service with lower priority let go first; no card, and
+        why, when there is none."""
+        started = time.monotonic()
+        self._side_model_server(request.consumer)
+        gpus = self._query()
+        allowed = self._allowed_cards(request, gpus)
+        report = self._collect(gpus)
+        with self._reservations.deciding():
+            card, eviction, why = self._choose_card(request, gpus, report, allowed)
+        actions: list[Action] = []
+        if eviction is not None:
+            actions = self._evict(request, eviction, report)
+            card, why = self._after_eviction(request, eviction.room.gpu.uuid, actions)
+        result = {
+            "card": None if card is None else {"index": card.index, "uuid": card.uuid},
+            "why": why,
+            "reserved_s": None if card is None else self._place.reserve_s,
+            "actions": [_action_json(action) for action in actions],
+            "duration_s": round(time.monotonic() - started, 1),
+        }
+        _log_place(request, result)
+        return result
+
+    # --- where a side model goes --------------------------------------------------------------
+
+    def _side_model_server(self, name: str) -> SideModelServer:
+        consumer = self._consumers.get(name)
+        if not isinstance(consumer, SideModelServer):
+            known = sorted(n for n, c in self._consumers.items() if isinstance(c, SideModelServer))
+            raise NotFound(f"no side-model service {name!r}, configured: {known}")
+        return consumer
+
+    @staticmethod
+    def _allowed_cards(request: PlaceRequest, gpus: Sequence[Gpu]) -> frozenset[str]:
+        cards = list(gpus)
+        if request.card is not None:
+            try:
+                cards = [resolve_gpu(request.card, gpus)]
+            except GpuSpecError as error:
+                raise RequestError(str(error)) from error
+        if request.min_compute_cap is not None:
+            cards = [gpu for gpu in cards if gpu.compute_cap >= request.min_compute_cap]
+        return frozenset(gpu.uuid for gpu in cards)
+
+    def _choose_card(
+        self, request: PlaceRequest, gpus: Sequence[Gpu], report: _Report, allowed: frozenset[str],
+    ) -> tuple[Gpu | None, Eviction | None, str | None]:
+        """Under the lock: the card, promised; or the card where idle side models must let go first (promised
+        already, so nobody takes the room they leave); or why there is none."""
+        rooms, errors = self._rooms(gpus, report, without=(request.consumer, request.item))
+        if errors:
+            return None, None, f"cannot say what is free: {_names(errors)}"
+        candidates = [room for room in rooms if room.gpu.uuid in allowed]
+        if not candidates:
+            return None, None, "no card of this machine meets the request"
+        headroom = self._place.headroom_mib
+        chosen = choose(candidates, request.need_mib, headroom)
+        if chosen is not None:
+            self._promise(request, chosen.gpu)
+            return chosen.gpu, None, None
+        eviction = plan_eviction(candidates, request.need_mib, headroom, self._rank(request.consumer))
+        if eviction is None:
+            best = max(candidates, key=lambda room: room.room_mib)
+            return None, None, (f"needs {request.need_mib} MiB and {headroom} MiB headroom, the most room is "
+                                f"{best.room_mib} MiB on GPU {best.gpu.index}")
+        self._promise(request, eviction.room.gpu)
+        return None, eviction, None
+
+    def _promise(self, request: PlaceRequest, gpu: Gpu) -> None:
+        self._reservations.put(request.consumer, request.item, {gpu.uuid: request.need_mib}, self._place.reserve_s)
+
+    def _rank(self, consumer: str) -> Callable[[Claim], int | None]:
+        """Who gives way to ``consumer``: the side models of a service after it in ``priority``, the later
+        the sooner."""
+        priority = self._place.priority
+        if consumer not in priority:
+            return lambda claim: None
+        own = priority.index(consumer)
+
+        def rank(claim: Claim) -> int | None:
+            if claim.consumer not in priority or priority.index(claim.consumer) <= own:
+                return None
+            return priority.index(claim.consumer)
+
+        return rank
+
+    def _evict(self, request: PlaceRequest, eviction: Eviction, report: _Report) -> list[Action]:
+        reason = f"room for {request.consumer}:{request.item}: {request.reason}"
+        deadline = time.monotonic() + self._free_timeout_s
+        wanted = {(claim.consumer, claim.item) for claim in eviction.claims}
+        actions: list[Action] = []
+        for name, holders in report.holders.items():
+            evicted = [holder for holder in holders if (name, holder.item) in wanted]
+            service = self._consumers[name]
+            if not evicted or not isinstance(service, SideModelServer):
+                continue
+            try:
+                actions.extend(service.release_idle(evicted, reason=reason, deadline=deadline))
+            except ConsumerError as error:
+                actions.extend(Action(name, holder.item, "error", str(error)) for holder in evicted)
+        return actions
+
+    def _after_eviction(self, request: PlaceRequest, uuid: str, actions: Sequence[Action]) -> tuple[Gpu | None, str | None]:
+        """The card once the others let go and its memory came back (within the verify limit), promised anew;
+        else no card and why."""
+        refused = [action for action in actions if action.outcome != "released"]
+        if refused:
+            self._reservations.drop(request.consumer, request.item)
+            return None, "did not let go: " + ", ".join(f"{a.consumer}:{a.item} ({a.outcome})" for a in refused)
+        limit = time.monotonic() + self._verify.timeout_s
+        while True:
+            gpus = self._query()
+            report = self._collect(gpus)
+            with self._reservations.deciding():
+                rooms, errors = self._rooms(gpus, report, without=(request.consumer, request.item))
+                room = next(room for room in rooms if room.gpu.uuid == uuid)
+                if not errors and room.room_mib - self._place.headroom_mib >= request.need_mib:
+                    self._promise(request, room.gpu)
+                    return room.gpu, None
+                if time.monotonic() >= limit:
+                    self._reservations.drop(request.consumer, request.item)
+                    why = f"cannot say what is free: {_names(errors)}" if errors else \
+                        f"GPU {room.gpu.index} has {room.room_mib} MiB room after the release"
+                    return None, why
+            time.sleep(self._verify.poll_s)
+
+    # --- what each card has left --------------------------------------------------------------
+
+    def _rooms(
+        self, gpus: Sequence[Gpu], report: _Report, without: tuple[str, str] | None = None,
+    ) -> tuple[list[CardRoom], list[dict[str, str]]]:
+        """Every card with the claims on it, and the consumers whose claims are not known. ``without``: a
+        consumer's item that is being replaced; neither its holder, nor the memory that holder has in use,
+        nor its promise counts."""
+        profile_claims, errors = self._profile_claims(gpus, report)
+        reservations = [r for r in self._reservations.active() if (r.consumer, r.item) != without]
+        rooms = []
+        for gpu in gpus:
+            claims = [self._claim(holder, gpu, profile_claims)
+                      for holders in report.holders.values() for holder in holders if gpu.uuid in holder.gpu_uuids]
+            replaced = sum(claim.in_use_mib for claim in claims if (claim.consumer, claim.item) == without)
+            kept = [claim for claim in claims if (claim.consumer, claim.item) != without]
+            on_card = [reservation for reservation in reservations if reservation.card == gpu.uuid]
+            card = replace(gpu, memory_used_mib=max(0, gpu.memory_used_mib - replaced))
+            rooms.append(CardRoom(card, with_reservations(kept, on_card)))
+        return rooms, report.errors + errors
+
+    def _profile_claims(
+        self, gpus: Sequence[Gpu], report: _Report,
+    ) -> tuple[dict[tuple[str, str], Mapping[str, int] | None], list[dict[str, str]]]:
+        """The claim of each running model of the model servers by (server, model); ``None`` = unknown."""
+        claims: dict[tuple[str, str], Mapping[str, int] | None] = {}
+        errors: list[dict[str, str]] = []
+        for name, holders in report.holders.items():
+            server = self._consumers[name]
+            if not holders or not isinstance(server, ModelServer):
+                continue
+            try:
+                profiles = {profile.name: profile.claim_mib for profile in server.profiles(gpus, self._measurements())}
+            except ConsumerError as error:
+                errors.append({"consumer": name, "detail": str(error)})
+                continue
+            claims.update({(name, holder.item): profiles.get(holder.item) for holder in holders})
+        return claims, errors
+
+    def _claim(self, holder: Holder, gpu: Gpu, profile_claims: Mapping[tuple[str, str], Mapping[str, int] | None]) -> Claim:
+        if isinstance(self._consumers[holder.consumer], ModelServer):
+            return model_claim(holder, gpu, profile_claims.get((holder.consumer, holder.item)))
+        return side_model_claim(holder, gpu)
+
+    def _model_needs(self, server: ModelServer, model: str, gpus: Sequence[Gpu]) -> dict[str, int]:
+        """What the model's profile claims per card, the whole card where that is unknown."""
+        try:
+            profile = next(profile for profile in server.profiles(gpus, self._measurements()) if profile.name == model)
+        except ConsumerError as error:
+            raise ModelServerUnreachable(str(error)) from error
+        totals = {gpu.uuid: gpu.memory_total_mib for gpu in gpus}
+        claim = profile.claim_mib or {}
+        return {uuid: claim.get(uuid, totals[uuid]) for uuid in profile.cards}
 
     # --- what to free -------------------------------------------------------------------------
 
@@ -304,9 +523,53 @@ class Orchestrator:
         }
 
     def _status_body(self, gpus: Sequence[Gpu], report: _Report, uuids: Sequence[str] | frozenset[str]) -> dict[str, Any]:
+        rooms, errors = self._rooms(gpus, report)
+        reservations = self._reservations.active()
         return {
-            "gpus": [_gpu_json(gpu, report.holders, complete=not report.errors) for gpu in gpus if gpu.uuid in uuids],
-            "errors": report.errors,
+            "gpus": [self._gpu_json(room, report.holders, reservations, complete=not errors)
+                     for room in rooms if room.gpu.uuid in uuids],
+            "errors": errors,
+        }
+
+    def _gpu_json(
+        self, room: CardRoom, holders: Mapping[str, Sequence[Holder]], reservations: Sequence[Reservation], *,
+        complete: bool,
+    ) -> dict[str, Any]:
+        """One card of ``/status``; ``complete``: every claim is known (else nobody can say what is available)."""
+        gpu = room.gpu
+        on_card = [holder for consumer_holders in holders.values() for holder in consumer_holders
+                   if gpu.uuid in holder.gpu_uuids]
+        reported = [holder.memory_mib.get(gpu.uuid) for holder in on_card]
+        if all(mib is not None for mib in reported):
+            unattributed: int | None = max(0, gpu.memory_used_mib - sum(mib for mib in reported if mib is not None))
+        else:
+            unattributed = None
+        claims = {(claim.consumer, claim.item): claim.mib for claim in room.claims}
+        return {
+            "index": gpu.index,
+            "uuid": gpu.uuid,
+            "name": gpu.name,
+            "compute_cap": gpu.compute_cap,
+            "memory_total_mib": gpu.memory_total_mib,
+            "memory_used_mib": gpu.memory_used_mib,
+            "holders": [
+                {
+                    "consumer": holder.consumer,
+                    "item": holder.item,
+                    "memory_mib": holder.memory_mib.get(gpu.uuid),
+                    "need_mib": holder.need_mib,
+                    "claim_mib": claims[(holder.consumer, holder.item)] if complete else None,
+                    "busy": holder.busy,
+                    "persistent": holder.persistent,
+                }
+                for holder in on_card
+            ],
+            "reservations": [
+                {"consumer": r.consumer, "item": r.item, "need_mib": r.need_mib, "left_s": self._reservations.left_s(r)}
+                for r in reservations if r.card == gpu.uuid
+            ],
+            "unattributed_mib": unattributed,
+            "available_mib": room.room_mib if complete else None,
         }
 
 
@@ -314,46 +577,6 @@ def _unkept_errors(report: _Report, keep: Sequence[str]) -> list[dict[str, str]]
     """The consumers that could not report, except those the request keeps as a whole: what they hold
     stays either way (calibration stops the model server, then has the rest cleared)."""
     return [error for error in report.errors if error["consumer"] not in keep]
-
-
-def _available_mib(gpu: Gpu, on_card: Sequence[Holder]) -> int:
-    """Memory another program may take on the card: what is in use, or what the holders with a share
-    (``memory_fraction``) may fill plus what the others report, whichever is more. A vLLM model allocates
-    part of its share only while it computes; taking that would make it run out (25.10.2026)."""
-    claimed = sum(round(holder.memory_fraction * gpu.memory_total_mib) for holder in on_card
-                  if holder.memory_fraction is not None)
-    others = sum(holder.memory_mib.get(gpu.uuid, 0) for holder in on_card if holder.memory_fraction is None)
-    return max(0, gpu.memory_total_mib - max(gpu.memory_used_mib, claimed + others))
-
-
-def _gpu_json(gpu: Gpu, holders: Mapping[str, Sequence[Holder]], *, complete: bool) -> dict[str, Any]:
-    """One card of ``/status``; ``complete``: every consumer reported (else nobody can say what is available)."""
-    on_card = [holder for consumer_holders in holders.values() for holder in consumer_holders if gpu.uuid in holder.gpu_uuids]
-    reported = [holder.memory_mib.get(gpu.uuid) for holder in on_card]
-    if all(mib is not None for mib in reported):
-        unattributed: int | None = max(0, gpu.memory_used_mib - sum(mib for mib in reported if mib is not None))
-    else:
-        unattributed = None
-    return {
-        "index": gpu.index,
-        "uuid": gpu.uuid,
-        "name": gpu.name,
-        "memory_total_mib": gpu.memory_total_mib,
-        "memory_used_mib": gpu.memory_used_mib,
-        "holders": [
-            {
-                "consumer": holder.consumer,
-                "item": holder.item,
-                "memory_mib": holder.memory_mib.get(gpu.uuid),
-                "busy": holder.busy,
-                "persistent": holder.persistent,
-                "memory_fraction": holder.memory_fraction,
-            }
-            for holder in on_card
-        ],
-        "unattributed_mib": unattributed,
-        "available_mib": _available_mib(gpu, on_card) if complete else None,
-    }
 
 
 def _profile_json(server: str, profile: Profile) -> dict[str, Any]:
@@ -391,6 +614,17 @@ def _action_json(action: Action) -> dict[str, Any]:
     if action.waited_s is not None:
         body["waited_s"] = action.waited_s
     return body
+
+
+def _names(errors: Sequence[Mapping[str, str]]) -> str:
+    return ", ".join(f"{error['consumer']} ({error['detail']})" for error in errors)
+
+
+def _log_place(request: PlaceRequest, result: Mapping[str, Any]) -> None:
+    card = f"GPU {result['card']['index']}" if result["card"] is not None else f"no card: {result['why']}"
+    evicted = "".join(f", {a['consumer']}:{a['item']}={a['outcome']}" for a in result["actions"])
+    print(f"[place] {request.consumer}:{request.item} {request.need_mib} MiB — {request.reason} — {card}{evicted} "
+          f"in {result['duration_s']} s", flush=True)
 
 
 def _log(request: FreeRequest, result: Mapping[str, Any]) -> None:

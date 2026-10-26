@@ -53,6 +53,24 @@ def test_rejected_consumers(tmp_path: Path, consumers: list[dict[str, Any]], mes
         load_config(write(tmp_path, {"consumers": consumers}))
 
 
+def test_placement_settings(tmp_path: Path) -> None:
+    config = load_config(write(tmp_path, {"consumers": CONSUMERS}))
+    assert (config.place.headroom_mib, config.place.reserve_s, config.place.priority) == (512, 60.0, ())
+    data = {"consumers": CONSUMERS, "headroom_mib": 256, "reserve_s": 90, "priority": ["tts", "stt"]}
+    config = load_config(write(tmp_path, data))
+    assert (config.place.headroom_mib, config.place.reserve_s, config.place.priority) == (256, 90.0, ("tts", "stt"))
+
+
+@pytest.mark.parametrize("priority, message", [
+    (["tts", "ls"], "no side-model services"),
+    (["tts", "tts"], "distinct"),
+    ("tts", "distinct"),
+])
+def test_rejected_priority(tmp_path: Path, priority: Any, message: str) -> None:
+    with pytest.raises(ConfigError, match=message):
+        load_config(write(tmp_path, {"consumers": CONSUMERS, "priority": priority}))
+
+
 def test_a_port_is_no_boolean(tmp_path: Path) -> None:
     with pytest.raises(ConfigError, match="wrong type"):
         load_config(write(tmp_path, {"listen": {"port": True}, "consumers": CONSUMERS}))

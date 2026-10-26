@@ -1,8 +1,9 @@
 """A service with the suites' common GPU release API (STT-Suite, TTS-Suite).
 
 ``GET /gpu/holders`` names what the service holds on this machine's GPUs, the cards taken from the
-process's configuration. ``GET /gpu/needs`` names what each of its items needs on a card.
-``POST /gpu/release`` takes ``items``, ``force`` and ``reason`` and answers one result per item:
+process's configuration, and what each holder needs there (``need_mib``). ``GET /gpu/needs`` names what each
+of its items needs on a card. ``POST /gpu/release`` takes ``items``, ``force`` and ``reason`` and answers one
+result per item:
 ``released`` (the process with the CUDA context has ended, proven by the service), ``not_running``,
 ``busy`` (left alone, only without force) or ``failed`` (the end could not be proven).
 """
@@ -47,6 +48,7 @@ class GpuRelease:
                 gpu_uuids=cards,
                 memory_mib=entry.get("memory_mib") or {},
                 busy=entry.get("busy") if isinstance(entry.get("busy"), bool) else None,
+                need_mib=_need_mib(entry.get("need_mib"), self.name, entry.get("item")),
             ))
         return holders
 
@@ -86,6 +88,14 @@ class GpuRelease:
         actions.extend(Action(self.name, item, left, "still busy", _waited(started)) for item in busy)
         return actions
 
+    def release_idle(self, holders: Sequence[Holder], *, reason: str, deadline: float) -> list[Action]:
+        started = time.monotonic()
+        actions: list[Action] = []
+        busy = self._settle(self._ask([holder.item for holder in holders], False, reason, deadline), "released",
+                            started, actions)
+        actions.extend(Action(self.name, item, "refused_busy", "busy", _waited(started)) for item in busy)
+        return actions
+
     def _ask(self, items: Sequence[str], force: bool, reason: str, deadline: float) -> dict[str, tuple[str, str]]:
         body = {"items": list(items), "force": force, "reason": reason}
         # A release ends a process or stops a container, after a forced abort even a start; with the proof and a
@@ -116,6 +126,13 @@ class GpuRelease:
             else:
                 actions.append(Action(self.name, item, "error", f"unknown outcome {outcome!r}: {detail}"))
         return busy
+
+
+def _need_mib(value: Any, service: str, item: Any) -> int | None:
+    """A holder's need: MiB, or ``None`` where the service does not know it."""
+    if value is None or (isinstance(value, int) and not isinstance(value, bool) and value >= 0):
+        return value
+    raise ConsumerError(f"{service}: {item} reports need_mib {value!r}, not a number of MiB")
 
 
 def _waited(started: float) -> float:

@@ -36,15 +36,34 @@ def release(routes: dict[tuple[str, str], Route], *items: str, deadline_s: float
 
 def test_holders_come_from_the_service_with_known_cards() -> None:
     body = {"holders": [
-        {"item": "gpu-worker", "gpu_uuids": ["GPU-bbbb1111"], "memory_mib": {"GPU-bbbb1111": 3100}, "busy": True},
-        {"item": "qwen", "gpu_uuids": ["GPU-cccc2222"], "memory_mib": None, "busy": False},
+        {"item": "gpu-worker", "gpu_uuids": ["GPU-bbbb1111"], "memory_mib": {"GPU-bbbb1111": 3100}, "busy": True,
+         "need_mib": 3712},
+        {"item": "qwen", "gpu_uuids": ["GPU-cccc2222"], "memory_mib": None, "busy": False, "need_mib": None},
     ]}
     with FakeService({("GET", "/gpu/holders"): answers((200, body))}).running() as fake:
         holders = GpuRelease("svc", fake.url).holders(GPUS)
-    assert [(h.item, h.gpu_uuids, dict(h.memory_mib), h.busy) for h in holders] == [
-        ("gpu-worker", frozenset({"GPU-bbbb1111"}), {"GPU-bbbb1111": 3100}, True),
-        ("qwen", frozenset({"GPU-cccc2222"}), {}, False),
+    assert [(h.item, h.gpu_uuids, dict(h.memory_mib), h.busy, h.need_mib) for h in holders] == [
+        ("gpu-worker", frozenset({"GPU-bbbb1111"}), {"GPU-bbbb1111": 3100}, True, 3712),
+        ("qwen", frozenset({"GPU-cccc2222"}), {}, False, None),
     ]
+
+
+@pytest.mark.parametrize("need", [-1, "3712", True, 3712.5])
+def test_a_need_that_is_no_number_of_mib_is_an_error(need: Any) -> None:
+    body = {"holders": [{"item": "w", "gpu_uuids": ["GPU-bbbb1111"], "busy": False, "need_mib": need}]}
+    with FakeService({("GET", "/gpu/holders"): answers((200, body))}).running() as fake, \
+            pytest.raises(ConsumerError, match="need_mib"):
+        GpuRelease("svc", fake.url).holders(GPUS)
+
+
+def test_an_idle_release_asks_once_without_force_and_leaves_the_busy() -> None:
+    routes = {RELEASE: answers(results(("a", "released"), ("b", "busy"), status=409))}
+    with FakeService(routes).running() as fake:
+        actions = GpuRelease("svc", fake.url, busy_wait_s=30, force_after_wait=True).release_idle(
+            held("a", "b"), reason="room for X", deadline=time.monotonic() + 60)
+        calls = fake.calls
+    assert [(a.item, a.outcome) for a in actions] == [("a", "released"), ("b", "refused_busy")]
+    assert [body for _, _, body in calls] == [{"items": ["a", "b"], "force": False, "reason": "room for X"}]
 
 
 def test_a_card_that_is_not_on_this_machine_is_an_error() -> None:

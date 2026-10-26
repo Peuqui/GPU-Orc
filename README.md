@@ -7,8 +7,10 @@ loads, its caller asks GPU-Orc to clear the cards the model will use; GPU-Orc as
 sit there to let go, through their own interfaces. It never kills a process from outside: the hardest
 step is a service's own `force`, and only where the config allows it.
 
-It loads nothing, plans nothing and is no model server. One place per machine knows how to free its
-cards, instead of every caller carrying its own copy of that logic.
+It also decides on which card a side model of a suite (a TTS engine, an STT worker) starts: every holder
+counts with its claim, what it may take there, not only with what it holds right now. It loads nothing
+itself and is no model server. One place per machine knows how to free and share its cards, instead of
+every caller carrying its own copy of that logic.
 
 ## How it works
 
@@ -41,6 +43,7 @@ cards, instead of every caller carrying its own copy of that logic.
 | `GET /needs` | what the side models need on a GPU: the suites' engines (their `GET /gpu/needs`) and the model servers' vision models |
 | `GET /ui/` | the web page (cards, profiles, needs), as with the suites |
 | `POST /free` | free GPUs: `{"gpus": [0, "GPU-…"] \| "all", ...}` or `{"model": "<name>", ...}` |
+| `POST /place` | the card a suite's engine or worker may start on: `{"consumer", "item", "need_mib", "reason"}`, its need promised there for `reserve_s` |
 
 `POST /free` takes exactly one of two forms, plus `reason` (required), `keep` and `dry_run`:
 

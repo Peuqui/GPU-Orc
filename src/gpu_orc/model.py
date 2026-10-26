@@ -28,9 +28,9 @@ class Holder:
     memory_mib: Mapping[str, int] = field(default_factory=dict)
     busy: bool | None = None
     persistent: bool | None = None
-    # Share of each of its cards the item may fill while it runs, allocated yet or not (vLLM's
-    # --gpu-memory-utilization): memory nvidia-smi shows as free there is not free for others.
-    memory_fraction: float | None = None
+    # What a side model needs on each of its cards, as its service reports it (the larger of this and
+    # its memory is its claim); a model of the model server has the claim of its profile instead.
+    need_mib: int | None = None
 
 
 NeedSource = Literal["measured", "configured", "estimate", "unknown"]
@@ -80,9 +80,16 @@ class Consumer(Protocol):
 
 
 @runtime_checkable
-class NeedsReporter(Consumer, Protocol):
+class SideModelServer(Consumer, Protocol):
+    """A service of side models (the suites): it says what its items need and asks GPU-Orc where to start one."""
+
     def needs(self) -> list[Need]:
         """What each item needs on a card, running or not. Raises ConsumerError."""
+        ...
+
+    def release_idle(self, holders: Sequence[Holder], *, reason: str, deadline: float) -> list[Action]:
+        """Ask once, without force and without waiting, to let go of ``holders``; a busy one stays
+        (``refused_busy``). Raises ConsumerError."""
         ...
 
 

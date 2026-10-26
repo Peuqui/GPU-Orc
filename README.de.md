@@ -8,8 +8,10 @@ bittet die Dienste, die dort sitzen, über deren eigene Schnittstellen, Platz zu
 einen Prozess von außen. Das härteste Mittel ist das `force` eines Dienstes, und das nur, wo die Config
 es erlaubt.
 
-Er lädt nichts, plant nichts und ist kein Modellserver. Eine Stelle je Rechner weiß, wie man dessen
-Karten freiräumt, statt dass jeder Aufrufer eine eigene Kopie dieser Logik mitbringt.
+Er entscheidet auch, auf welcher Karte ein Zusatzmodell einer Suite (eine TTS-Engine, ein STT-Worker)
+startet: Jeder Halter zählt mit seinem Anspruch, also mit dem, was er dort belegen darf, nicht nur mit dem,
+was er gerade belegt. Er lädt selbst nichts und ist kein Modellserver. Eine Stelle je Rechner weiß, wie man
+dessen Karten freiräumt und teilt, statt dass jeder Aufrufer eine eigene Kopie dieser Logik mitbringt.
 
 ## Wie es funktioniert
 
@@ -43,6 +45,7 @@ Karten freiräumt, statt dass jeder Aufrufer eine eigene Kopie dieser Logik mitb
 | `GET /needs` | was die Zusatzmodelle auf einer Karte brauchen: die Engines der Suiten (deren `GET /gpu/needs`) und die Bildmodelle der Modellserver |
 | `GET /ui/` | die Weboberfläche (Karten, Profile, Bedarfe), wie bei den Suiten |
 | `POST /free` | Karten freiräumen: `{"gpus": [0, "GPU-…"] \| "all", ...}` oder `{"model": "<name>", ...}` |
+| `POST /place` | die Karte, auf der eine Engine oder ein Worker einer Suite starten darf: `{"consumer", "item", "need_mib", "reason"}`, der Bedarf dort für `reserve_s` zugesagt |
 
 `POST /free` nimmt genau eine von zwei Formen, dazu `reason` (Pflicht), `keep` und `dry_run`:
 

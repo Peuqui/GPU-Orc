@@ -10,6 +10,7 @@ from typing import Any
 
 import yaml
 
+from .claims import DEFAULT_PLACE, PlaceSettings
 from .consumers.gpu_release import GpuRelease
 from .consumers.llama_swap import LlamaSwap
 from .model import Consumer
@@ -36,6 +37,7 @@ class Config:
     # Per model server: its vision models, whose need GPU-Orc measures (the side models of the other
     # consumers report theirs over /gpu/needs).
     vision_models: Mapping[str, tuple[str, ...]]
+    place: PlaceSettings
 
 
 def load_config(path: Path) -> Config:
@@ -65,7 +67,23 @@ def load_config(path: Path) -> Config:
         raise ConfigError(f"consumers: names must be unique, got {names}")
     state_dir = Path(_get(data, "state_dir", str, "config", DEFAULT_STATE_DIR)).expanduser()
     vision_models = _vision_models(data.get("vision_models", {}), consumers)
-    return Config(host, port, token, free_timeout_s, verify, consumers, state_dir, vision_models)
+    place = PlaceSettings(
+        headroom_mib=_get(data, "headroom_mib", int, "config", DEFAULT_PLACE.headroom_mib),
+        reserve_s=float(_get(data, "reserve_s", (int, float), "config", DEFAULT_PLACE.reserve_s)),
+        priority=_priority(data.get("priority", []), consumers),
+    )
+    return Config(host, port, token, free_timeout_s, verify, consumers, state_dir, vision_models, place)
+
+
+def _priority(raw: Any, consumers: tuple[Consumer, ...]) -> tuple[str, ...]:
+    """``priority: [<side-model service>, ...]``, the first gives way last."""
+    services = [consumer.name for consumer in consumers if isinstance(consumer, GpuRelease)]
+    if not isinstance(raw, list) or not all(isinstance(name, str) for name in raw) or len(set(raw)) != len(raw):
+        raise ConfigError("priority: a list of distinct consumer names is required")
+    unknown = [name for name in raw if name not in services]
+    if unknown:
+        raise ConfigError(f"priority: {unknown} are no side-model services ({services})")
+    return tuple(raw)
 
 
 def _vision_models(raw: Any, consumers: tuple[Consumer, ...]) -> Mapping[str, tuple[str, ...]]:

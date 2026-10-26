@@ -8,14 +8,22 @@ const REFRESH_MS = 5000
 
 const mib = (value) => (value === null || value === undefined ? t('nothing') : formatNumber(value))
 
-// One holder of a card as a line: who, what, its memory or share, and whether it works or stays.
+// One holder of a card as a line: who, what, its memory and its claim, and whether it works or stays.
 function holderLine(holder) {
   const notes = []
   if (holder.memory_mib !== null) notes.push(`${formatNumber(holder.memory_mib)} MiB`)
-  if (holder.memory_fraction !== null) notes.push(t('share', { fraction: formatNumber(holder.memory_fraction) }))
+  if (holder.claim_mib !== null) notes.push(t('holderClaim', { mib: formatNumber(holder.claim_mib) }))
   if (holder.busy) notes.push(t('busy'))
   if (holder.persistent) notes.push(t('persistent'))
   return h('div', {}, h('code', {}, `${holder.consumer}: ${holder.item}`), notes.length ? ` (${notes.join(', ')})` : '')
+}
+
+// Room promised to an item that is about to start on the card.
+function reservationLine(reservation) {
+  return h('div', { class: 'muted' }, t('reserved', {
+    who: `${reservation.consumer}: ${reservation.item}`, mib: formatNumber(reservation.need_mib),
+    seconds: formatNumber(Math.round(reservation.left_s)),
+  }))
 }
 
 // What is on each card and what another program may still take there.
@@ -46,7 +54,8 @@ export function cardsView({ fail }) {
           `${gpu.index}: ${gpu.name}`,
           `${mib(gpu.memory_used_mib)} / ${mib(gpu.memory_total_mib)}`,
           h('strong', {}, mib(gpu.available_mib)),
-          gpu.holders.length ? gpu.holders.map(holderLine) : t('nothing'),
+          gpu.holders.length || gpu.reservations.length
+            ? [...gpu.holders.map(holderLine), ...gpu.reservations.map(reservationLine)] : t('nothing'),
           mib(gpu.unattributed_mib),
         ])),
     )

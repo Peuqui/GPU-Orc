@@ -2,7 +2,8 @@
 
 [Deutsch](release-api.de.md)
 
-As of GPU-Orc 0.3.0, with the STT-Suite and the TTS-Suite on their current main branch.
+As of GPU-Orc 0.6.0. Where a suite starts a GPU engine or worker, it asks GPU-Orc beforehand
+(`POST /place`, see [interface.md](interface.md)).
 
 The STT-Suite and the TTS-Suite free their GPUs the same way: the same endpoints, the same status
 codes, the same `force`, the same result fields. GPU-Orc needs one consumer type for them
@@ -20,7 +21,7 @@ What the service holds on this machine's GPUs; engines on other machines are not
 
 ```json
 {"holders": [
-  {"item": "gpu-worker", "gpu_uuids": ["GPU-…"], "memory_mib": {"GPU-…": 3100}, "busy": true}
+  {"item": "gpu-worker", "gpu_uuids": ["GPU-…"], "memory_mib": {"GPU-…": 3100}, "need_mib": 3712, "busy": true}
 ]}
 ```
 
@@ -31,6 +32,9 @@ What the service holds on this machine's GPUs; engines on other machines are not
   container that really sees every GPU is listed on all of them.
 - `memory_mib`: what the service measured itself, per GPU; `null` where there is no measurement (STT:
   for diarization). The GPU does not depend on it.
+- `need_mib`: what the item needs on each of its GPUs, as in `/gpu/needs` (the model the worker holds or
+  loads); `null` when unknown. GPU-Orc counts the larger of this and `memory_mib` as the item's claim, the
+  whole GPU while it is `null`.
 - `busy`: STT a running transcription, TTS a running reading that holds the engine, or a start of the
   engine under way.
 

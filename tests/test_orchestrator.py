@@ -22,8 +22,8 @@ HOLDER_MIB = 1000
 class Machine:
     """GPU memory that goes down when a fake service really lets go of what it held."""
 
-    def __init__(self) -> None:
-        self.used = {gpu.uuid: gpu.memory_used_mib + 5000 for gpu in GPUS}
+    def __init__(self, used: dict[str, int] | None = None) -> None:
+        self.used = used if used is not None else {gpu.uuid: gpu.memory_used_mib + 5000 for gpu in GPUS}
         self.lock = threading.Lock()
 
     def query(self) -> list[Gpu]:
@@ -69,6 +69,8 @@ class FakeServer(FakeService):
     models: dict[str, frozenset[str]] = field(default_factory=dict)
     no_eviction: tuple[str, ...] = ()
     unreachable: bool = False
+    # The claim of a profile per card; a model not named here claims 1000 MiB of each of its cards.
+    claims: dict[str, dict[str, int] | None] = field(default_factory=dict)
 
     def is_running(self, model: str) -> bool:
         if self.unreachable:
@@ -89,17 +91,28 @@ class FakeServer(FakeService):
         if self.unreachable:
             raise ConsumerError("config unreadable")
         return [Profile(name, "vllm", tuple(sorted(cards)), False, 307200, 0.9, 3500, Variant(name),
-                        {uuid: 1000 for uuid in cards}, "fraction", None) for name, cards in self.models.items()]
+                        self.claims.get(name, {uuid: 1000 for uuid in cards}), "fraction", None)
+                for name, cards in self.models.items()]
 
 
 @dataclass
 class FakeReporter(FakeService):
+    """A suite: it reports needs and lets go of idle items."""
+
     reported: list[Need] = field(default_factory=list)
+    idle_asks: list[str] = field(default_factory=list)
+    turns_busy: bool = False  # got busy between the plan and the ask
 
     def needs(self) -> list[Need]:
         if self.fail:
             raise ConsumerError(f"{self.name} is down")
         return list(self.reported)
+
+    def release_idle(self, holders: Sequence[Holder], *, reason: str, deadline: float) -> list[Action]:
+        self.idle_asks.append(reason)
+        busy = [holder for holder in holders if holder.busy or self.turns_busy]
+        actions = self.release([holder for holder in holders if holder not in busy], reason=reason, deadline=deadline)
+        return actions + [Action(self.name, holder.item, "refused_busy") for holder in busy]
 
 
 MODELS = {"big": frozenset({A, B}), "small-vlm": frozenset({B}), "elsewhere": frozenset({C})}
@@ -312,25 +325,41 @@ def test_unreachable_model_server() -> None:
 
 
 def test_status_attributes_memory_only_where_reported() -> None:
-    tts = service("tts", Holder("tts", "qwen", frozenset({A}), memory_mib={A: 600}))
-    status = make(tts, server(model("main", B))).status()
+    tts = service("tts", Holder("tts", "qwen", frozenset({A}), memory_mib={A: 600}, need_mib=600))
+    status = make(tts, server(model("big", B))).status()
     by_index = {g["index"]: g for g in status["gpus"]}
     assert by_index[0]["unattributed_mib"] == 400      # 1000 used, 600 reported
     assert by_index[1]["unattributed_mib"] is None     # llama-swap reports no memory
     assert by_index[2]["unattributed_mib"] == 0 and by_index[2]["holders"] == []
-    assert [g["available_mib"] for g in status["gpus"]] == [49152 - 1000, 32768 - 500, 49152]   # what is not in use
     assert status["queue"] == {"running": False, "waiting": 0, "running_since_s": None}
 
 
-def test_available_leaves_a_model_the_share_it_may_fill() -> None:
-    vllm = Holder("ls", "main", frozenset({A, B}), memory_fraction=0.9)
-    tts = service("tts", Holder("tts", "qwen", frozenset({A}), memory_mib={A: 600}))
-    by_index = {g["index"]: g for g in make(tts, server(vllm)).status()["gpus"]}
-    # nvidia-smi shows 48152 and 32268 MiB free; most of that the model may fill while it computes.
-    assert by_index[0]["available_mib"] == 49152 - (round(0.9 * 49152) + 600)
-    assert by_index[1]["available_mib"] == 32768 - round(0.9 * 32768)
-    assert by_index[2]["available_mib"] == 49152
-    assert [(h["item"], h["memory_fraction"]) for h in by_index[0]["holders"]] == [("qwen", None), ("main", 0.9)]
+def test_available_leaves_every_holder_its_claim() -> None:
+    main = model("big", A, B)
+    machine = Machine({A: 20000, B: 6000, C: 2000})
+    tts = service("tts", Holder("tts", "qwen", frozenset({C}), memory_mib={C: 2000}, need_mib=6000))
+    stt = service("stt", Holder("stt", "gpu-worker", frozenset({A}), memory_mib={A: 3000}, need_mib=1030))
+    ls = server(main, claims={"big": {A: 40000, B: 30000}})
+    by_index = {g["index"]: g for g in make(tts, stt, ls, machine=machine).status()["gpus"]}
+    # The model may fill its claim while it computes; the worker holds more than it needs; the engine still loads.
+    assert by_index[0]["available_mib"] == 49152 - 40000 - 3000
+    assert by_index[1]["available_mib"] == 32768 - 30000
+    assert by_index[2]["available_mib"] == 49152 - 6000
+    assert [(h["item"], h["need_mib"], h["claim_mib"]) for h in by_index[0]["holders"]] == [
+        ("gpu-worker", 1030, 3000), ("big", None, 40000)]
+
+
+def test_memory_no_holder_accounts_for_counts_on_top() -> None:
+    tts = service("tts", Holder("tts", "qwen", frozenset({C}), memory_mib={C: 2000}, need_mib=6000))
+    status = make(tts, server(), machine=Machine({A: 0, B: 0, C: 9000})).status()
+    assert status["gpus"][2]["available_mib"] == 49152 - 6000 - 7000
+
+
+def test_an_unknown_claim_takes_the_whole_card() -> None:
+    tts = service("tts", Holder("tts", "qwen", frozenset({C}), memory_mib={C: 2000}))
+    ls = server(model("big", A), claims={"big": None})
+    gpus = make(tts, ls).status()["gpus"]
+    assert [g["available_mib"] for g in gpus] == [0, 32768 - 500, 0]
 
 
 def test_without_every_consumer_nobody_can_say_what_is_available() -> None:

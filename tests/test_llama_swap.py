@@ -50,10 +50,11 @@ def test_holders_with_cards_and_persistence(config_file: Path) -> None:
     ]
 
 
-def test_a_vllm_model_claims_its_share_of_each_card(config_file: Path) -> None:
-    with FakeService({("GET", "/running"): answers(running("main-vllm", "main-a"))}).running() as fake:
-        holders = LlamaSwap("ls", fake.url, config_file).holders(GPUS)
-    assert [(h.item, h.memory_fraction) for h in holders] == [("main-vllm", 0.9), ("main-a", None)]
+def test_a_model_reports_no_memory_and_no_need(config_file: Path) -> None:
+    # What it takes is the claim of its profile.
+    with FakeService({("GET", "/running"): answers(running("main-vllm"))}).running() as fake:
+        (holder,) = LlamaSwap("ls", fake.url, config_file).holders(GPUS)
+    assert (holder.memory_mib, holder.need_mib) == ({}, None)
 
 
 def test_running_model_missing_from_config_is_an_error(config_file: Path) -> None:

@@ -2,13 +2,14 @@
 
 [English](interface.md)
 
-Stand: Version 0.3.0. Die gemeinsame Freigabe-Schnittstelle der Suiten, über die GPU-Orc STT-Suite
+Stand: Version 0.6.0. Die gemeinsame Freigabe-Schnittstelle der Suiten, über die GPU-Orc STT-Suite
 und TTS-Suite anspricht, steht in [release-api.de.md](release-api.de.md).
 
-GPU-Orc ist ein kleiner Dienst je Rechner. Er räumt auf Anfrage Grafikkarten frei und sagt, wer gerade
-was belegt. Er lädt nichts, plant nichts und ersetzt keinen Modellserver. Er spricht nur die
-Schnittstellen der Dienste an, die Karten belegen, und beendet nie Prozesse von außen. Das härteste
-Mittel ist das `force` eines Dienstes, und das nur, wo die Config es erlaubt.
+GPU-Orc ist ein kleiner Dienst je Rechner. Er räumt auf Anfrage Grafikkarten frei, sagt, wer gerade was
+belegt, und entscheidet, auf welcher Karte ein Zusatzmodell (Engine oder Worker einer Suite) startet. Er lädt
+selbst nichts und ersetzt keinen Modellserver. Er spricht nur die Schnittstellen der Dienste an, die Karten
+belegen, und beendet nie Prozesse von außen. Das härteste Mittel ist das `force` eines Dienstes, und das nur,
+wo die Config es erlaubt.
 
 ## Grundsätze
 
@@ -23,7 +24,7 @@ Mittel ist das `force` eines Dienstes, und das nur, wo die Config es erlaubt.
   der UUID.
 - **Reihenfolge:** `/free`-Anfragen arbeitet GPU-Orc nacheinander ab. Innerhalb einer Anfrage fragt
   und bittet er alle betroffenen Verbraucher *gleichzeitig*, sie sind unabhängig voneinander.
-  `/status` und `/health` antworten immer sofort.
+  `/status`, `/health` und `/place` warten nie in dieser Schlange.
   - **Ausnahme für die Form `model`:** Bevor die Anfrage eingereiht wird, fragt GPU-Orc den
     Modellserver, ob das Modell schon läuft (geladen oder am Laden). Wenn ja, antwortet er sofort mit
     `"already_running": true`, auch wenn gerade eine andere Anfrage läuft. Diese Prüfung ändert nichts
@@ -47,6 +48,16 @@ Mittel ist das `force` eines Dienstes, und das nur, wo die Config es erlaubt.
   - nvidia-smi liefert nur den gesamten und den belegten Speicher je Karte; das geht auch unter WSL2,
     wo nvidia-smi keine Prozesse nennt.
   - Es gibt keine Zuordnung über PIDs, weder in `/status` noch in `/free`.
+- **Ansprüche:** Was ein Element auf einer Karte belegen darf, ob es das schon tut oder nicht.
+  - Ein Modell des Modellservers: der Anspruch seines Profils (`GET /profiles`), die ganze Karte, solange
+    der unbekannt ist.
+  - Ein Zusatzmodell: der größere Wert von gemeldetem Speicher und gemeldetem Bedarf (`need_mib` in
+    `/gpu/holders`); der Speicher wächst beim Start noch und hat beim Rechnen Spitzen. Die ganze Karte,
+    solange der Bedarf unbekannt ist.
+  - Zugesagter Platz (eine Reservierung, siehe `/place` und `/free`), den noch kein Halter abdeckt: sein
+    Bedarf. Ein Halter desselben Elements auf derselben Karte zählt einmal, mit dem größeren der beiden Werte.
+  - Speicher, den kein Halter erklärt (ein anderes Programm), zählt obendrauf. Was übrig bleibt, ist das
+    `available_mib` einer Karte.
 
 ## Endpunkte
 
@@ -55,7 +66,7 @@ Fehler kommen immer als `{"error": "<text>"}`. Ein unbekannter Pfad ergibt `404`
 ### `GET /health`
 
 ```json
-{"status": "ok", "version": "0.3.0", "free_timeout_s": 180.0, "caller_timeout_s": 210.0}
+{"status": "ok", "version": "0.6.0", "free_timeout_s": 180.0, "caller_timeout_s": 210.0}
 ```
 
 ### `GET /status` — wer hält was
@@ -68,15 +79,16 @@ Fehler kommen immer als `{"error": "<text>"}`. Ein unbekannter Pfad ergibt `404`
       "index": 0,
       "uuid": "GPU-…",
       "name": "Quadro RTX 8000",
+      "compute_cap": 7.5,
       "memory_total_mib": 49152,
       "memory_used_mib": 31200,
       "holders": [
-        {"consumer": "llama-swap", "item": "<modell>", "memory_mib": null, "busy": null, "persistent": false, "memory_fraction": 0.6},
-        {"consumer": "stt-suite", "item": "gpu-worker", "memory_mib": 3100, "busy": false, "persistent": null, "memory_fraction": null},
-        {"consumer": "tts-suite", "item": "<engine>", "memory_mib": 6024, "busy": false, "persistent": null, "memory_fraction": null}
+        {"consumer": "llama-swap", "item": "<modell>", "memory_mib": null, "need_mib": null, "claim_mib": 29491, "busy": null, "persistent": false},
+        {"consumer": "stt-suite", "item": "gpu-worker", "memory_mib": 3100, "need_mib": 3712, "claim_mib": 3712, "busy": false, "persistent": null}
       ],
+      "reservations": [{"consumer": "tts-suite", "item": "<engine>", "need_mib": 6024, "left_s": 57.2}],
       "unattributed_mib": null,
-      "available_mib": 10537
+      "available_mib": 9925
     }
   ],
   "errors": []
@@ -88,19 +100,19 @@ Fehler kommen immer als `{"error": "<text>"}`. Ein unbekannter Pfad ergibt `404`
 - `holders`: Ein Halter, der mehrere Karten sieht, steht bei jeder davon.
   - `memory_mib` steht nur da, wo der Dienst seinen Speicher selbst meldet: die TTS-Suite je Engine,
     die STT-Suite für den GPU-Worker (nicht für die Diarisierung). llama-swap meldet nur die Karten, also `null`.
-  - `busy` melden nur die Suiten (Transkription, Vorlesung, Start), `persistent` nur der Modellserver
-    (Mitglied einer Gruppe mit `persistent: true`). Das jeweils andere Feld ist `null`.
-  - `memory_fraction` ist der Anteil jeder seiner Karten, den ein Element füllen darf, ob schon belegt
-    oder nicht: bei llama-swap das `--gpu-memory-utilization` eines vLLM-Modells in dessen `cmd`, sonst `null`.
+  - `need_mib` melden nur die Suiten, ebenso `busy` (Transkription, Vorlesung, Start); `persistent` nur der
+    Modellserver (Mitglied einer Gruppe mit `persistent: true`). Die jeweils anderen Felder sind `null`.
+  - `claim_mib` ist der Anspruch des Elements auf dieser Karte (siehe Grundsätze); `null`, solange ein
+    Verbraucher in `errors` steht.
+- `reservations` ist der zugesagte Platz auf der Karte und wie viele Sekunden die Zusage noch gilt.
 - `unattributed_mib` ist der belegte Speicher minus dem, was die Halter melden. Er ist nur dann eine
   Zahl, wenn jeder Halter auf der Karte seinen Speicher meldet, sonst `null`. Auf einer Karte ohne
   Halter ist es der ganze belegte Speicher. GPU-Orc fasst Unbekanntes nie an.
 - `available_mib` ist, was ein weiteres Programm auf der Karte noch belegen darf: Kartenspeicher minus
-  dem größeren von belegtem Speicher und „Anteile (`memory_fraction` × Kartenspeicher) plus gemeldeter
-  Speicher der übrigen Halter“. Ein vLLM-Modell belegt einen Teil seines Anteils nur, während es rechnet;
-  nvidia-smi zeigt ihn dazwischen als frei, und wer ihn nimmt, lässt das Modell beim nächsten Rechnen
-  ohne Speicher (25.10.2026). Die Suiten wählen ihre Karte nach diesem Wert. `null`, solange ein
-  Verbraucher in `errors` steht: Dann weiß niemand, was frei ist.
+  Ansprüchen, Reservierungen und Speicher, den niemand erklärt (siehe Grundsätze). Ein vLLM-Modell belegt
+  einen Teil seines Anteils nur, während es rechnet; nvidia-smi zeigt ihn dazwischen als frei, und wer ihn
+  nimmt, lässt das Modell beim nächsten Rechnen ohne Speicher (25.10.2026). `null`, solange ein Verbraucher
+  in `errors` steht: Dann weiß niemand, was frei ist.
 - `errors` nennt Verbraucher, die nicht sagen konnten, was sie halten
   (`[{"consumer": …, "detail": …}]`); ihre Halter fehlen dann in `holders`.
 - `500`, wenn nvidia-smi scheitert.
@@ -158,6 +170,59 @@ Fehler kommen immer als `{"error": "<text>"}`. Ein unbekannter Pfad ergibt `404`
 - `source`: `measured` (Burn-in), `configured`, `estimate`, `unknown`. Ein Wert ohne Puffer: Den Restpuffer
   je Karte rechnet GPU-Orc dazu.
 
+### `POST /place` — wo ein Zusatzmodell starten darf
+
+Eine Suite fragt, bevor sie eine Engine oder einen Worker auf einer Karte startet:
+
+```json
+{"consumer": "tts-suite", "item": "qwen3local", "need_mib": 6024, "reason": "Vorlesung für AIfred"}
+```
+
+| Feld | Pflicht | Bedeutung |
+|---|---|---|
+| `consumer` | ja | Die Suite (ein `gpu-release`-Verbraucher der Config) |
+| `item` | ja | Das Element, wie die Suite es in `/gpu/holders` nennt (`gpu-worker`, `<engine>`) |
+| `need_mib` | ja | Was es auf der Karte braucht, ohne Puffer (den rechnet GPU-Orc mit `headroom_mib` dazu) |
+| `reason` | ja | Steht im Log von GPU-Orc; müssen Zusatzmodelle weichen, auch in deren Log |
+| `card` | nein | Nur diese Karte (Index oder UUID), etwa für einen Burn-in auf einer vorgegebenen Karte |
+| `min_compute_cap` | nein | Nur Karten mit mindestens dieser CUDA-Compute-Capability (Diarisierung: 7.5) |
+
+Andere Felder weist GPU-Orc mit `400` ab.
+
+- **Passt:** Eine Karte passt, wo `available_mib` minus `headroom_mib` (Config, Standard 512) den `need_mib`
+  deckt. Davon kommt zuerst eine Karte ohne Ansprüche und ohne belegten Speicher (Zusatzmodelle verteilen sich
+  auf die freien Karten), dann die mit dem meisten Platz, dann der niedrigste Index.
+- **Das Element selbst:** Ein Halter und eine Zusage desselben Verbrauchers und Elements zählen nicht, ebenso
+  wenig der Speicher, den dieser Halter belegt: Das Element wird ersetzt (der STT-Worker wechselt das Modell).
+- **Weichen:** Passt keine Karte, müssen untätige Zusatzmodelle einer Suite, die in `priority` (Config) nach
+  der fragenden steht, freigeben: die auf der Karte, wo am wenigsten weichen müssen, die mit dem niedrigsten
+  Vorrang zuerst, ohne Zwang und ohne Warten. Ein beschäftigtes bleibt. Danach misst GPU-Orc bis
+  `verify_timeout_s` nach.
+- **Zusage:** Die Karte der Antwort hält `need_mib` für das Element `reserve_s` lang fest (Config, Standard
+  60 s), damit eine zweite Anfrage nicht denselben Platz bekommt, bevor das Element in `/gpu/holders`
+  erscheint; danach zählt sein eigener Anspruch. Eine Zusage läuft von selbst ab, auch wenn die Suite das
+  Element nie startet.
+- GPU-Orc entscheidet hier nur und fragt niemanden außer `/gpu/holders` (und beim Weichen); ein Lock im
+  Dienst umfasst nur die Entscheidung selbst.
+
+Antwort `200`:
+
+```json
+{"card": {"index": 2, "uuid": "GPU-…"}, "why": null, "reserved_s": 60.0, "actions": [], "duration_s": 0.4}
+```
+```json
+{"card": null, "why": "needs 6024 MiB and 512 MiB headroom, the most room is 1650 MiB on GPU 4",
+ "reserved_s": null, "actions": [], "duration_s": 0.3}
+```
+
+- `card: null` mit `why`: Keine Karte passt; keine Karte erfüllt `card` oder `min_compute_cap`; ein
+  Verbraucher konnte nicht sagen, was er hält (`cannot say what is free: …`); ein Zusatzmodell hat nicht
+  freigegeben.
+- `actions` sind die Zusatzmodelle, die weichen mussten, mit den Ergebnissen von `/free` (`released`,
+  `refused_busy`, `not_freed`, `error`).
+- `400`: falsche Felder oder unbekannte `card`. `404`: `consumer` ist keine Suite der Config. `500`:
+  nvidia-smi gescheitert.
+
 ### Die Seite unter `/ui/`
 
 Eine Weboberfläche wie die der Suiten: Karten (`/status`), Profile (`/profiles`), Bedarfe (`/needs`).
@@ -202,6 +267,9 @@ Modellservers.
     mit `persistent: true` aus dessen eigener Config.
 - Die übrigen Modelle tauscht der Modellserver beim Laden selbst aus; GPU-Orc fasst sie nicht an.
   Gerade benutzte Hauptmodelle bricht diese Form also nicht ab.
+- Ab ihrer Reihe in der Schlange bis `reserve_s` nach der Antwort sind die Karten des Modells ihm mit dem
+  Anspruch seines Profils zugesagt (die ganze Karte, wo der unbekannt ist): Ein Zusatzmodell, das in dieser
+  Zeit platziert würde, nähme den Platz, in den es gleich lädt. Nicht bei `dry_run`.
 - Keine dauerhaften Modelle entladen lässt ein Modell, das selbst dauerhaft ist oder auf ein Muster
   aus `no_eviction_models` passt (heute die `-vlm-`-Profile, die per Kalibrierung Platz für die
   dauerhaften Modelle lassen).
@@ -297,6 +365,9 @@ consumers:
 state_dir: ~/.local/state/gpu-orc           # Messwerte (measurements.json)
 vision_models:                              # Bildmodelle je Modellserver, ihren Bedarf misst GPU-Orc
   llama-swap: [Qwen3VL-4B-Instruct-Q8_0]
+headroom_mib: 512                           # bleibt auf einer Karte über den Bedarf eines Zusatzmodells frei (/place)
+reserve_s: 60                               # so lange zählt zugesagter Platz ohne Halter
+priority: [tts-suite, stt-suite]            # Suiten, deren untätige Zusatzmodelle weichen, die erste zuletzt
 ```
 
 Ohne Angabe gelten `busy_wait_s: 0` und `force_after_wait: false`. Unbekannte Schlüssel eines Verbrauchers
@@ -315,6 +386,8 @@ Anfrage neu, sie darf sich im Betrieb ändern.
 
 ## Aufrufer
 
+- **STT-Suite und TTS-Suite** rufen `POST /place`, bevor sie einen GPU-Worker oder eine GPU-Engine starten,
+  und starten auf der Karte der Antwort.
 - **AIfred** ruft vor dem Laden eines Modells und eines Describers `POST /free {"model": …}` auf.
   Kalibrierung und Wechsel des TTS-Profils rufen `{"gpus": "all", "keep": ["llama-swap"]}`. Die
   Platzprüfung des Describers liest `GET /status`. AIfred lädt auch bei `free: false` und meldet es.

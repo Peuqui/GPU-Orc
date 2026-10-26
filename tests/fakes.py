@@ -14,9 +14,9 @@ from gpu_orc.gpus import Gpu
 Route = Callable[[Any], tuple[int, Any]]
 
 GPUS = [
-    Gpu(0, "GPU-aaaa0000", "Card A", 49152, 1000),
-    Gpu(1, "GPU-bbbb1111", "Card B", 32768, 500),
-    Gpu(2, "GPU-cccc2222", "Card C", 49152, 0),
+    Gpu(0, "GPU-aaaa0000", "Card A", 49152, 1000, 7.5),
+    Gpu(1, "GPU-bbbb1111", "Card B", 32768, 500, 7.0),
+    Gpu(2, "GPU-cccc2222", "Card C", 49152, 0, 7.5),
 ]
 
 

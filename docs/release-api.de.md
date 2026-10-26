@@ -2,7 +2,8 @@
 
 [English](release-api.md)
 
-Stand: GPU-Orc 0.3.0, STT-Suite und TTS-Suite auf ihrem aktuellen Hauptzweig.
+Stand: GPU-Orc 0.6.0. Wo eine Suite eine GPU-Engine oder einen GPU-Worker startet, fragt sie vorher
+GPU-Orc (`POST /place`, siehe [interface.de.md](interface.de.md)).
 
 STT-Suite und TTS-Suite geben ihre Grafikkarten auf dieselbe Weise frei: gleiche Endpunkte, gleiche
 Antwortcodes, gleiches `force`, gleiche Ergebnisfelder. GPU-Orc braucht dafür einen einzigen
@@ -20,7 +21,7 @@ Was der Dienst auf den Karten dieses Rechners hält; Engines auf anderen Rechner
 
 ```json
 {"holders": [
-  {"item": "gpu-worker", "gpu_uuids": ["GPU-…"], "memory_mib": {"GPU-…": 3100}, "busy": true}
+  {"item": "gpu-worker", "gpu_uuids": ["GPU-…"], "memory_mib": {"GPU-…": 3100}, "need_mib": 3712, "busy": true}
 ]}
 ```
 
@@ -31,6 +32,9 @@ Was der Dienst auf den Karten dieses Rechners hält; Engines auf anderen Rechner
   `docker inspect`). Nur ein Container, der wirklich alle Karten sieht, steht auf allen.
 - `memory_mib`: was der Dienst selbst gemessen hat, je Karte; `null`, wo die Messung fehlt (STT: für
   die Diarisierung). Die Karte hängt nicht davon ab.
+- `need_mib`: was das Element auf jeder seiner Karten braucht, wie in `/gpu/needs` (das Modell, das der
+  Worker hält oder lädt); `null`, wenn unbekannt. GPU-Orc zählt den größeren Wert von diesem und
+  `memory_mib` als Anspruch des Elements, die ganze Karte, solange er `null` ist.
 - `busy`: STT eine laufende Transkription, TTS eine laufende Vorlesung, die die Engine hält, oder ein
   Start der Engine, der gerade läuft.
 

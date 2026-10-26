@@ -46,3 +46,11 @@ consumers:
 # models over GET /gpu/needs).
 # vision_models:
 #   llama-swap: [Qwen3VL-4B-Instruct-Q8_0]
+
+# Placing a side model (POST /place): what stays free on a card on top of its need, and how long promised
+# room counts before the suite reports the item.
+# headroom_mib: 512
+# reserve_s: 60
+
+# Suites whose idle side models give way when another one finds no card, the first gives way last.
+# priority: [tts-suite, stt-suite]

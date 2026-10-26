@@ -2,13 +2,13 @@
 
 [Deutsch](interface.de.md)
 
-As of version 0.3.0. The suites' common release API, through which GPU-Orc talks to the STT-Suite and
+As of version 0.6.0. The suites' common release API, through which GPU-Orc talks to the STT-Suite and
 the TTS-Suite, is described in [release-api.md](release-api.md).
 
-GPU-Orc is a small service per machine. It frees GPUs on request and tells who holds what right now.
-It loads nothing, plans nothing and replaces no model server. It only talks to the interfaces of the
-services that hold GPUs and never ends a process from outside. The hardest step is a service's own
-`force`, and only where the config allows it.
+GPU-Orc is a small service per machine. It frees GPUs on request, tells who holds what right now and
+decides on which GPU a side model (an engine or worker of a suite) starts. It loads nothing itself and
+replaces no model server. It only talks to the interfaces of the services that hold GPUs and never ends a
+process from outside. The hardest step is a service's own `force`, and only where the config allows it.
 
 ## Principles
 
@@ -21,8 +21,8 @@ services that hold GPUs and never ends a process from outside. The hardest step 
 - **GPUs:** Given as an index (nvidia-smi order, i.e. PCI bus) or as a UUID, also as a unique prefix
   of a UUID. Answers always carry index and UUID; internally GPU-Orc works with the UUID.
 - **Order:** GPU-Orc handles `/free` requests one after another. Within one request it asks all
-  affected consumers *at the same time*; they are independent of each other. `/status` and `/health`
-  always answer at once.
+  affected consumers *at the same time*; they are independent of each other. `/status`, `/health` and
+  `/place` never wait in that queue.
   - **Exception for the `model` form:** Before the request is queued, GPU-Orc asks the model server
     whether the model already runs (loaded or loading). If so, it answers `"already_running": true`
     at once, even while another request is running. This check changes nothing, so a caller that asks
@@ -46,6 +46,17 @@ services that hold GPUs and never ends a process from outside. The hardest step 
     names no processes.
   - Nothing is mapped through PIDs, neither in `/status` nor in `/free`.
 
+- **Claims:** What an item may take on a GPU, whether it holds that much yet or not.
+  - A model of the model server: the claim of its profile (`GET /profiles`), the whole GPU while that is
+    unknown.
+  - A side model: the larger of the memory its suite reports and the need it reports (`need_mib` in
+    `/gpu/holders`); the memory still grows while it starts and peaks while it computes. The whole GPU while
+    the need is unknown.
+  - Promised room (a reservation, see `/place` and `/free`) that no holder accounts for yet: its need. A
+    holder of the same item on the same GPU counts once, with the larger of the two.
+  - Memory in use that no holder accounts for (another program) counts on top. What is left is a GPU's
+    `available_mib`.
+
 ## Endpoints
 
 Errors always come as `{"error": "<text>"}`. An unknown path gives `404`.
@@ -53,7 +64,7 @@ Errors always come as `{"error": "<text>"}`. An unknown path gives `404`.
 ### `GET /health`
 
 ```json
-{"status": "ok", "version": "0.3.0", "free_timeout_s": 180.0, "caller_timeout_s": 210.0}
+{"status": "ok", "version": "0.6.0", "free_timeout_s": 180.0, "caller_timeout_s": 210.0}
 ```
 
 ### `GET /status` — who holds what
@@ -66,15 +77,16 @@ Errors always come as `{"error": "<text>"}`. An unknown path gives `404`.
       "index": 0,
       "uuid": "GPU-…",
       "name": "Quadro RTX 8000",
+      "compute_cap": 7.5,
       "memory_total_mib": 49152,
       "memory_used_mib": 31200,
       "holders": [
-        {"consumer": "llama-swap", "item": "<model>", "memory_mib": null, "busy": null, "persistent": false, "memory_fraction": 0.6},
-        {"consumer": "stt-suite", "item": "gpu-worker", "memory_mib": 3100, "busy": false, "persistent": null, "memory_fraction": null},
-        {"consumer": "tts-suite", "item": "<engine>", "memory_mib": 6024, "busy": false, "persistent": null, "memory_fraction": null}
+        {"consumer": "llama-swap", "item": "<model>", "memory_mib": null, "need_mib": null, "claim_mib": 29491, "busy": null, "persistent": false},
+        {"consumer": "stt-suite", "item": "gpu-worker", "memory_mib": 3100, "need_mib": 3712, "claim_mib": 3712, "busy": false, "persistent": null}
       ],
+      "reservations": [{"consumer": "tts-suite", "item": "<engine>", "need_mib": 6024, "left_s": 57.2}],
       "unattributed_mib": null,
-      "available_mib": 10537
+      "available_mib": 9925
     }
   ],
   "errors": []
@@ -86,19 +98,19 @@ Errors always come as `{"error": "<text>"}`. An unknown path gives `404`.
 - `holders`: A holder that sees several GPUs is listed with each of them.
   - `memory_mib` is only there where the service reports its memory itself: the TTS-Suite per engine,
     the STT-Suite for the GPU worker (not for diarization). llama-swap reports only the GPUs, so `null`.
-  - `busy` is reported only by the suites (a transcription, a reading, a start), `persistent` only by
-    the model server (member of a group with `persistent: true`). The other field is `null`.
-  - `memory_fraction` is the share of each of its GPUs an item may fill, allocated yet or not: for
-    llama-swap the `--gpu-memory-utilization` of a vLLM model in its `cmd`, otherwise `null`.
+  - `need_mib` is reported only by the suites, `busy` too (a transcription, a reading, a start);
+    `persistent` only by the model server (member of a group with `persistent: true`). The other fields
+    are `null`.
+  - `claim_mib` is the item's claim on this GPU (see Principles); `null` while a consumer is in `errors`.
+- `reservations` is the room promised on the GPU and how many seconds the promise has left.
 - `unattributed_mib` is the used memory minus what the holders report. It is a number only when every
   holder on the GPU reports its memory, otherwise `null`. On a GPU without holders it is all of the
   used memory. GPU-Orc never touches what nobody reports.
-- `available_mib` is what another program may still take on the GPU: its memory minus the larger of
-  the used memory and "shares (`memory_fraction` × GPU memory) plus the memory the other holders
-  report". A vLLM model allocates part of its share only while it computes; nvidia-smi shows it as
-  free in between, and whoever takes it leaves the model without memory at its next step
-  (2026-10-25). The suites choose their GPU by this value. `null` while a consumer is in `errors`:
-  then nobody knows what is free.
+- `available_mib` is what another program may still take on the GPU: its memory minus the claims, the
+  reservations and the memory nobody accounts for (see Principles). A vLLM model allocates part of its
+  share only while it computes; nvidia-smi shows it as free in between, and whoever takes it leaves the
+  model without memory at its next step (2026-10-25). `null` while a consumer is in `errors`: then nobody
+  knows what is free.
 - `errors` names consumers that could not say what they hold (`[{"consumer": …, "detail": …}]`);
   their holders are then missing from `holders`.
 - `500` when nvidia-smi fails.
@@ -156,6 +168,56 @@ Errors always come as `{"error": "<text>"}`. An unknown path gives `404`.
 - `source`: `measured` (burn-in), `configured`, `estimate`, `unknown`. A value without margin: GPU-Orc adds
   the residual per GPU itself.
 
+### `POST /place` — where a side model may start
+
+A suite asks before it starts an engine or a worker on a GPU:
+
+```json
+{"consumer": "tts-suite", "item": "qwen3local", "need_mib": 6024, "reason": "reading for AIfred"}
+```
+
+| Field | Required | Meaning |
+|---|---|---|
+| `consumer` | yes | The suite (a `gpu-release` consumer of the config) |
+| `item` | yes | The item as the suite names it in `/gpu/holders` (`gpu-worker`, `<engine>`) |
+| `need_mib` | yes | What it needs on the GPU, without margin (GPU-Orc adds `headroom_mib`) |
+| `reason` | yes | Written to GPU-Orc's log; when side models have to give way, also to theirs |
+| `card` | no | Only this GPU (index or UUID), for example for a burn-in on a given GPU |
+| `min_compute_cap` | no | Only GPUs with at least this CUDA compute capability (diarization: 7.5) |
+
+GPU-Orc refuses other fields with `400`.
+
+- **Fit:** A GPU fits where `available_mib` minus `headroom_mib` (config, default 512) covers `need_mib`.
+  Of those, a GPU without claims and without memory in use comes first (side models spread over the free
+  GPUs), then the one with the most room, then the lowest index.
+- **The item itself:** A holder and a promise of the same consumer and item do not count, and neither does
+  the memory that holder has in use: the item is being replaced (the STT worker switching models).
+- **Giving way:** Where no GPU fits, idle side models of a suite after the asking one in `priority` (config)
+  may have to let go: the ones on the GPU where the fewest must go, the lowest priority first, without force
+  and without waiting. One that is busy stays. Then GPU-Orc measures again until `verify_timeout_s`.
+- **Promise:** The answer's GPU keeps `need_mib` for the item for `reserve_s` (config, default 60 s), so
+  that a second request does not get the same room before the item shows in `/gpu/holders`; after that its
+  own claim counts. A promise runs out by itself, also when the suite never starts the item.
+- GPU-Orc only decides here and asks nobody but for `/gpu/holders` (and for giving way); a lock in the
+  service covers only the decision itself.
+
+Answer `200`:
+
+```json
+{"card": {"index": 2, "uuid": "GPU-…"}, "why": null, "reserved_s": 60.0, "actions": [], "duration_s": 0.4}
+```
+```json
+{"card": null, "why": "needs 6024 MiB and 512 MiB headroom, the most room is 1650 MiB on GPU 4",
+ "reserved_s": null, "actions": [], "duration_s": 0.3}
+```
+
+- `card: null` with `why`: no GPU fits; no GPU meets `card` or `min_compute_cap`; a consumer could not say
+  what it holds (`cannot say what is free: …`); a side model did not let go.
+- `actions` are the side models that had to give way, with the outcomes of `/free` (`released`,
+  `refused_busy`, `not_freed`, `error`).
+- `400`: wrong fields or an unknown `card`. `404`: `consumer` is no suite of the config. `500`: nvidia-smi
+  failed.
+
 ### The page under `/ui/`
 
 A web page like the suites': cards (`/status`), profiles (`/profiles`), needs (`/needs`). `/` leads there.
@@ -198,6 +260,9 @@ GPU-Orc refuses other fields with `400`.
     `persistent: true` in its own config.
 - The model server swaps its other models out itself when loading; GPU-Orc does not touch them. This
   form therefore never cuts off a main model in use.
+- From its turn in the queue until `reserve_s` after the answer, the model's GPUs are promised to it with
+  the claim of its profile (the whole GPU where that is unknown): a side model placed meanwhile would take
+  the room it is about to load into. Not with `dry_run`.
 - A model that is persistent itself, or matches a pattern in `no_eviction_models` (today the `-vlm-`
   profiles, which leave room for the persistent models by calibration), unloads no persistent models.
 - **GPU mapping:**
@@ -290,6 +355,9 @@ consumers:
 state_dir: ~/.local/state/gpu-orc           # measurements (measurements.json)
 vision_models:                              # vision models per model server; GPU-Orc measures their need
   llama-swap: [Qwen3VL-4B-Instruct-Q8_0]
+headroom_mib: 512                           # stays free on a GPU on top of a side model's need (/place)
+reserve_s: 60                               # how long promised room counts without a holder for it
+priority: [tts-suite, stt-suite]            # suites whose idle side models give way, the first last
 ```
 
 Without a value, `busy_wait_s: 0` and `force_after_wait: false` apply. Unknown keys of a consumer and
@@ -307,6 +375,8 @@ request; it may change while running.
 
 ## Callers
 
+- **STT-Suite and TTS-Suite** call `POST /place` before they start a GPU worker or a GPU engine, and start
+  it on the GPU of the answer.
 - **AIfred** calls `POST /free {"model": …}` before loading a model and a describer. Calibration and
   switching the TTS profile call `{"gpus": "all", "keep": ["llama-swap"]}`. The describer's room check
   reads `GET /status`. AIfred loads even on `free: false` and reports it.
