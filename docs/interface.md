@@ -236,9 +236,12 @@ request; it may change while running.
 
 ## Callers
 
-- **AIfred** calls `POST /free {"model": …}` before loading a model and a describer. Calibration and
-  switching the TTS profile call `{"gpus": "all", "keep": ["llama-swap"]}`. The describer's room check
-  reads `GET /status`. AIfred loads even on `free: false` and reports it.
+- **TTS-Suite and STT-Suite** read `GET /status` before they start a model on a GPU and take
+  `available_mib` as the free memory of each GPU, so they do not start into the share a vLLM model may
+  still fill. When GPU-Orc does not answer, they start nothing on a GPU (TTS goes on to the next entry,
+  STT with `device=auto` to the CPU).
+- **AIfred** does not call GPU-Orc at the moment: since 26 October 2026 it frees the GPUs itself again
+  (through the suites' `/gpu/release` and llama-swap). Its GPU-Orc client lives on in its branch `gpu-orc`.
 - **Agent-Orc** calls GPU-Orc for backends with local models (the backend's `gpu_orc` field with
   `port`, `model_server` if needed and `token_file` for remote machines). GPU-Orc runs on the model
   server's machine, at its address with the port from `gpu_orc`. Agent-Orc asks when Claude Code starts

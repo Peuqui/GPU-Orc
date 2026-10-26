@@ -242,9 +242,12 @@ Anfrage neu, sie darf sich im Betrieb ändern.
 
 ## Aufrufer
 
-- **AIfred** ruft vor dem Laden eines Modells und eines Describers `POST /free {"model": …}` auf.
-  Kalibrierung und Wechsel des TTS-Profils rufen `{"gpus": "all", "keep": ["llama-swap"]}`. Die
-  Platzprüfung des Describers liest `GET /status`. AIfred lädt auch bei `free: false` und meldet es.
+- **TTS-Suite und STT-Suite** lesen `GET /status`, bevor sie ein Modell auf einer GPU starten, und
+  nehmen `available_mib` als freien Speicher jeder Karte, damit sie nicht in den Anteil starten, den ein
+  vLLM-Modell noch füllen darf. Antwortet GPU-Orc nicht, starten sie nichts auf einer GPU (TTS geht zum
+  nächsten Eintrag, STT mit `device=auto` auf die CPU).
+- **AIfred** ruft GPU-Orc derzeit nicht auf: Seit dem 26.10.2026 räumt er die Karten wieder selbst frei
+  (über `/gpu/release` der Suiten und llama-swap). Sein GPU-Orc-Client liegt im Branch `gpu-orc`.
 - **Agent-Orc** ruft GPU-Orc für Backends mit lokalen Modellen auf (Feld `gpu_orc` des Backends mit
   `port`, bei Bedarf `model_server` und für entfernte Rechner `token_file`). GPU-Orc läuft dabei auf
   dem Rechner des Modellservers, unter dessen Adresse mit dem Port aus `gpu_orc`. Agent-Orc fragt beim
