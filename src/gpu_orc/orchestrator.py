@@ -10,7 +10,9 @@ from typing import Any, Literal
 
 from .gate import FifoGate
 from .gpus import Gpu, GpuSpecError, query_gpus, resolve_gpu
-from .model import Action, Consumer, ConsumerError, Holder, ModelServer, UnknownModel
+from .measurements import Measurements
+from .model import Action, Consumer, ConsumerError, Holder, ModelServer, Need, NeedsReporter, UnknownModel
+from .profiles import Profile
 from .verify import DEFAULT_VERIFY, StillHeld, VerifySettings, verify
 
 # How much longer than the overall limit a caller's HTTP timeout should be (answer, nvidia-smi).
@@ -52,8 +54,13 @@ class Orchestrator:
         free_timeout_s: float,
         query: Callable[[], list[Gpu]] = query_gpus,
         verify_settings: VerifySettings = DEFAULT_VERIFY,
+        measurements: Callable[[], Measurements] = Measurements,
+        vision_models: Mapping[str, Sequence[str]] | None = None,
     ) -> None:
         self._consumers = {consumer.name: consumer for consumer in consumers}
+        # Read on every call: an import or a measurement counts at once.
+        self._measurements = measurements
+        self._vision_models = vision_models or {}
         self._free_timeout_s = free_timeout_s
         self._query = query
         self._verify = verify_settings
@@ -74,6 +81,43 @@ class Orchestrator:
             "queue": {"running": state.running, "waiting": state.waiting, "running_since_s": state.running_since_s},
             **self._status_body(gpus, self._collect(gpus), [gpu.uuid for gpu in gpus]),
         }
+
+    def profiles(self) -> dict[str, Any]:
+        """Every profile of every model server, with what it takes of its cards."""
+        gpus = self._query()
+        measurements = self._measurements()
+        profiles: list[dict[str, Any]] = []
+        errors: list[dict[str, str]] = []
+        for name, consumer in self._consumers.items():
+            if not isinstance(consumer, ModelServer):
+                continue
+            try:
+                profiles.extend(_profile_json(name, profile) for profile in consumer.profiles(gpus, measurements))
+            except ConsumerError as error:
+                errors.append({"consumer": name, "detail": str(error)})
+        return {"profiles": profiles, "errors": errors}
+
+    def needs(self) -> dict[str, Any]:
+        """What the side models need on a card: the suites' items as they report them, the vision models
+        of the model servers as measured."""
+        reporters = {name: c for name, c in self._consumers.items() if isinstance(c, NeedsReporter)}
+        needs: list[Need] = []
+        errors: list[dict[str, str]] = []
+        if reporters:
+            with ThreadPoolExecutor(max_workers=len(reporters)) as pool:
+                futures = {name: pool.submit(reporter.needs) for name, reporter in reporters.items()}
+            for name, future in futures.items():
+                try:
+                    needs.extend(future.result())
+                except ConsumerError as error:
+                    errors.append({"consumer": name, "detail": str(error)})
+        vision = self._measurements().vision
+        for server, models in self._vision_models.items():
+            for model in models:
+                measured = vision.get(model)
+                needs.append(Need(server, model, measured.need_mib, "measured") if measured is not None
+                             else Need(server, model, None, "unknown"))
+        return {"needs": [_need_json(need) for need in needs], "errors": errors}
 
     def free(self, request: FreeRequest) -> dict[str, Any]:
         started = time.monotonic()
@@ -310,6 +354,34 @@ def _gpu_json(gpu: Gpu, holders: Mapping[str, Sequence[Holder]], *, complete: bo
         "unattributed_mib": unattributed,
         "available_mib": _available_mib(gpu, on_card) if complete else None,
     }
+
+
+def _profile_json(server: str, profile: Profile) -> dict[str, Any]:
+    variant = profile.variant
+    return {
+        "name": profile.name,
+        "model_server": server,
+        "backend": profile.backend,
+        "cards": list(profile.cards),
+        "persistent": profile.persistent,
+        "context": profile.context,
+        "memory_fraction": profile.memory_fraction,
+        "kv_blocks": profile.kv_blocks,
+        "variant": {
+            "base": variant.base, "tts": variant.tts, "vlm": variant.vlm, "speed": variant.speed,
+            "describer": variant.describer, "describer_gpu": variant.describer_gpu,
+        },
+        "claim_mib": dict(profile.claim_mib) if profile.claim_mib is not None else None,
+        "claim_source": profile.claim_source,
+        "measured_at": profile.measured_at,
+        "measured_as": profile.measured_as,
+        "problem": profile.problem,
+    }
+
+
+def _need_json(need: Need) -> dict[str, Any]:
+    return {"consumer": need.consumer, "item": need.item, "need_mib": need.need_mib, "source": need.source,
+            "default": need.default}
 
 
 def _action_json(action: Action) -> dict[str, Any]:

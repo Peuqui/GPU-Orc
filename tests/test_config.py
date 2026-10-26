@@ -56,3 +56,22 @@ def test_rejected_consumers(tmp_path: Path, consumers: list[dict[str, Any]], mes
 def test_a_port_is_no_boolean(tmp_path: Path) -> None:
     with pytest.raises(ConfigError, match="wrong type"):
         load_config(write(tmp_path, {"listen": {"port": True}, "consumers": CONSUMERS}))
+
+
+def test_state_dir_and_vision_models(tmp_path: Path) -> None:
+    config = load_config(write(tmp_path, {"consumers": CONSUMERS}))
+    assert str(config.state_dir).endswith("/.local/state/gpu-orc") and "~" not in str(config.state_dir)
+    assert config.vision_models == {}
+    data = {"consumers": CONSUMERS, "state_dir": str(tmp_path / "state"), "vision_models": {"ls": ["Qwen3VL-4B"]}}
+    config = load_config(write(tmp_path, data))
+    assert config.state_dir == tmp_path / "state" and config.vision_models == {"ls": ("Qwen3VL-4B",)}
+
+
+@pytest.mark.parametrize("vision_models, message", [
+    ({"tts": ["x"]}, "not a configured model server"),
+    ({"ls": "Qwen3VL-4B"}, "list of model names"),
+    (["Qwen3VL-4B"], "mapping"),
+])
+def test_rejected_vision_models(tmp_path: Path, vision_models: Any, message: str) -> None:
+    with pytest.raises(ConfigError, match=message):
+        load_config(write(tmp_path, {"consumers": CONSUMERS, "vision_models": vision_models}))

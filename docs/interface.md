@@ -103,6 +103,65 @@ Errors always come as `{"error": "<text>"}`. An unknown path gives `404`.
   their holders are then missing from `holders`.
 - `500` when nvidia-smi fails.
 
+### `GET /profiles` — the model server's profiles
+
+```json
+{
+  "profiles": [
+    {
+      "name": "<model>-tts-qwen3local", "model_server": "llama-swap", "backend": "llama.cpp",
+      "cards": ["GPU-…"], "persistent": false, "context": 131072, "memory_fraction": null, "kv_blocks": null,
+      "variant": {"base": "<model>", "tts": "qwen3local", "vlm": null, "speed": false, "describer": false, "describer_gpu": null},
+      "claim_mib": {"GPU-…": 41200}, "claim_source": "measured", "measured_at": "2026-07-12T23:02:40",
+      "measured_as": "<model>", "problem": null
+    }
+  ],
+  "errors": []
+}
+```
+
+- Every entry of llama-swap's config is a profile. `cards` are the GPUs of `CUDA_VISIBLE_DEVICES` in
+  nvidia-smi's order; `backend` comes from `cmd` (`vllm`, `llama.cpp`, else `other`), and so do `context`
+  (`--max-model-len` or `-c`), `kv_blocks` (`--num-gpu-blocks-override`) and `memory_fraction`.
+- `variant` follows the calibration's names: `<base>[-tts-<engine>][-vlm-<key>][-speed]` for the main
+  models, `<base>-visiond[-gpu<N>]` for the vision describers. It says which side models a profile leaves
+  room for.
+- `claim_mib` is what the profile takes per GPU:
+  - `measured`: from a calibration that recorded what stayed free after loading (GPU minus free, so with
+    the GPU's base use; rather too much); for a vision describer (`-visiond`) the burn-in peak of its base
+    model. Either counts only when it was measured at the profile's context. A variant whose entry is
+    the same as that of a measured profile (the calibration writes a variant whose room lies on a GPU
+    outside the model as a copy of its base) takes that measurement; `measured_as` names the profile,
+    else it is `null`;
+  - `fraction`: for vLLM without a measurement, its share of the GPU;
+  - `no_cards`: `{}`, the entry sees no GPU (`CUDA_VISIBLE_DEVICES=`) and runs on the CPU;
+  - `unknown`: `null`, for example a variant with settings of its own and no measurement.
+- `problem` says why the GPUs of an entry could not be read; `errors` names model servers whose config
+  could not be read.
+
+### `GET /needs` — what the side models need
+
+```json
+{"needs": [
+  {"consumer": "tts-suite", "item": "qwen3local", "need_mib": 6024, "source": "estimate", "default": false},
+  {"consumer": "stt-suite", "item": "parakeet-fp32", "need_mib": 3712, "source": "measured", "default": true},
+  {"consumer": "llama-swap", "item": "Qwen3VL-4B-Instruct-Q8_0", "need_mib": 7396, "source": "measured", "default": false}
+], "errors": []}
+```
+
+- The suites report their models themselves (`GET /gpu/needs`, see [release-api.md](release-api.md));
+  `default` is the model a suite loads onto the GPU when a request names none.
+- A model server's vision models are listed in the config under `vision_models`; GPU-Orc measures their
+  need itself (until then taken over with `gpu-orc import-aifred`, else `null` with `unknown`).
+- `source`: `measured` (burn-in), `configured`, `estimate`, `unknown`. A value without margin: GPU-Orc adds
+  the residual per GPU itself.
+
+### The page under `/ui/`
+
+A web page like the suites': cards (`/status`), profiles (`/profiles`), needs (`/needs`). `/` leads there.
+The page's files are served without a token, they hold no data; every call the page makes needs the token
+like any other call from another machine (button “Token”, kept in the browser).
+
 ### `POST /free` — free GPUs
 
 Exactly one of the two forms:
@@ -228,11 +287,23 @@ consumers:
     url: http://127.0.0.1:11435
     config_file: ~/.config/llama-swap/config.yaml   # GPUs per model, persistent groups
     no_eviction_models: ["*-vlm-*"]         # evict no persistent models when they load
+state_dir: ~/.local/state/gpu-orc           # measurements (measurements.json)
+vision_models:                              # vision models per model server; GPU-Orc measures their need
+  llama-swap: [Qwen3VL-4B-Instruct-Q8_0]
 ```
 
 Without a value, `busy_wait_s: 0` and `force_after_wait: false` apply. Unknown keys of a consumer and
 duplicate consumer names keep GPU-Orc from starting. GPU-Orc reads llama-swap's config on every
 request; it may change while running.
+
+## Command line
+
+- `gpu-orc serve [--config PATH]` runs the service.
+- `gpu-orc import-aifred --data <AIfred's data folder> [--config PATH]` takes over the measurements of
+  AIfred's calibration once into `<state_dir>/measurements.json`: per llama.cpp profile the newest
+  calibration that recorded the free memory per GPU and its context (`model_vram_cache.json`), and the
+  burn-in peak of each vision model (`vlm_vram_cache.json`). An imported value replaces the one of the same
+  name, all others stay. The running service reads the file on every request, no restart is needed.
 
 ## Callers
 

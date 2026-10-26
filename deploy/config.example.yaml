@@ -37,3 +37,12 @@ consumers:
     config_file: ~/.config/llama-swap/config.yaml
     # Models that keep room for the persistent ones by calibration and evict nothing.
     no_eviction_models: ["*-vlm-*"]
+
+# Where GPU-Orc keeps its measurements (measurements.json; `gpu-orc import-aifred` fills it once from an
+# existing AIfred calibration).
+# state_dir: ~/.local/state/gpu-orc
+
+# Vision models per model server: GPU-Orc lists their need under GET /needs (the suites report their own
+# models over GET /gpu/needs).
+# vision_models:
+#   llama-swap: [Qwen3VL-4B-Instruct-Q8_0]

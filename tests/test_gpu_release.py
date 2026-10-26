@@ -7,7 +7,7 @@ from fakes import GPUS, FakeService, Route, answers
 from gpu_orc import http_json
 from gpu_orc.consumers import gpu_release
 from gpu_orc.consumers.gpu_release import GpuRelease
-from gpu_orc.model import Action, ConsumerError, Holder
+from gpu_orc.model import Action, ConsumerError, Holder, Need
 
 RELEASE = ("POST", "/gpu/release")
 
@@ -110,3 +110,24 @@ def test_failed_end_is_not_freed() -> None:
 def test_missing_answer_is_an_error() -> None:
     with pytest.raises(ConsumerError, match="did not answer"):
         release({RELEASE: answers(results(("other", "released")))}, "a")
+
+
+def test_needs_come_from_the_service() -> None:
+    body = {"needs": [
+        {"item": "parakeet-fp32", "need_mib": 3712, "source": "measured", "default": True},
+        {"item": "xtts", "need_mib": None, "source": "unknown"},
+    ]}
+    with FakeService({("GET", "/gpu/needs"): answers((200, body))}).running() as fake:
+        assert GpuRelease("svc", fake.url).needs() == [
+            Need("svc", "parakeet-fp32", 3712, "measured", True), Need("svc", "xtts", None, "unknown", False),
+        ]
+
+
+@pytest.mark.parametrize("answer", [
+    (404, {"error": "no route"}),
+    (200, {"needs": [{"item": "x"}]}),
+    (200, {"needs": [{"item": "x", "need_mib": 1, "source": "guessed"}]}),
+])
+def test_needs_in_another_form_are_an_error(answer: tuple[int, Any]) -> None:
+    with FakeService({("GET", "/gpu/needs"): answers(answer)}).running() as fake, pytest.raises(ConsumerError):
+        GpuRelease("svc", fake.url).needs()

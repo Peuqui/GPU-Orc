@@ -17,6 +17,7 @@ from .verify import DEFAULT_VERIFY, VerifySettings
 
 DEFAULT_PORT = 5070
 DEFAULT_FREE_TIMEOUT_S = 180.0
+DEFAULT_STATE_DIR = "~/.local/state/gpu-orc"
 
 
 class ConfigError(ValueError):
@@ -31,6 +32,10 @@ class Config:
     free_timeout_s: float
     verify: VerifySettings
     consumers: tuple[Consumer, ...]
+    state_dir: Path
+    # Per model server: its vision models, whose need GPU-Orc measures (the side models of the other
+    # consumers report theirs over /gpu/needs).
+    vision_models: Mapping[str, tuple[str, ...]]
 
 
 def load_config(path: Path) -> Config:
@@ -58,7 +63,22 @@ def load_config(path: Path) -> Config:
     names = [consumer.name for consumer in consumers]
     if len(set(names)) != len(names):
         raise ConfigError(f"consumers: names must be unique, got {names}")
-    return Config(host, port, token, free_timeout_s, verify, consumers)
+    state_dir = Path(_get(data, "state_dir", str, "config", DEFAULT_STATE_DIR)).expanduser()
+    vision_models = _vision_models(data.get("vision_models", {}), consumers)
+    return Config(host, port, token, free_timeout_s, verify, consumers, state_dir, vision_models)
+
+
+def _vision_models(raw: Any, consumers: tuple[Consumer, ...]) -> Mapping[str, tuple[str, ...]]:
+    """``vision_models: {<model server>: [<model>, ...]}``."""
+    servers = {consumer.name for consumer in consumers if isinstance(consumer, LlamaSwap)}
+    result: dict[str, tuple[str, ...]] = {}
+    for server, models in _mapping(raw, "vision_models").items():
+        if server not in servers:
+            raise ConfigError(f"vision_models: {server!r} is not a configured model server ({sorted(servers)})")
+        if not isinstance(models, list) or not all(isinstance(model, str) for model in models):
+            raise ConfigError(f"vision_models.{server}: a list of model names is required")
+        result[server] = tuple(models)
+    return result
 
 
 def _consumer(entry: Mapping[str, Any]) -> Consumer:

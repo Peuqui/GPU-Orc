@@ -37,6 +37,9 @@ cards, instead of every caller carrying its own copy of that logic.
 |---|---|
 | `GET /health` | version, `free_timeout_s` and the HTTP timeout callers should use |
 | `GET /status` | per GPU: memory, holders, unattributed memory, what other programs may still take (`available_mib`); the queue; consumers that could not report |
+| `GET /profiles` | the model server's profiles: GPUs, backend, context, KV blocks, variant (which side models it leaves room for) and what each takes per GPU (measured, share or unknown) |
+| `GET /needs` | what the side models need on a GPU: the suites' engines (their `GET /gpu/needs`) and the model servers' vision models |
+| `GET /ui/` | the web page (cards, profiles, needs), as with the suites |
 | `POST /free` | free GPUs: `{"gpus": [0, "GPU-…"] \| "all", ...}` or `{"model": "<name>", ...}` |
 
 `POST /free` takes exactly one of two forms, plus `reason` (required), `keep` and `dry_run`:

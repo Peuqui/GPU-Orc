@@ -1,4 +1,5 @@
-"""HTTP interface: GET /health, GET /status, POST /free (standard library server, one thread per request)."""
+"""HTTP interface: GET /health, /status, /profiles, /needs, POST /free, and the web page under /ui/
+(standard library server, one thread per request)."""
 
 from __future__ import annotations
 
@@ -6,15 +7,24 @@ import hmac
 import ipaddress
 import json
 import subprocess
+import urllib.parse
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any
 
 from . import __version__
+from .measurements import MeasurementError
 from .orchestrator import FreeRequest, ModelServerUnreachable, NotFound, Orchestrator, RequestError
 
 MAX_BODY_BYTES = 64 * 1024
 FREE_FIELDS = {"gpus", "model", "model_server", "keep", "reason", "dry_run"}
+# The web page: a flat folder of files, served without a token (they hold no data; every call the page
+# makes for data needs the token like any other caller from outside this machine).
+UI_DIR = Path(__file__).parent / "ui"
+UI_PREFIX = "/ui/"
+UI_CONTENT_TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
+                    ".css": "text/css; charset=utf-8"}
 
 
 class GpuOrcServer(ThreadingHTTPServer):
@@ -30,6 +40,13 @@ class Handler(BaseHTTPRequestHandler):
     server: GpuOrcServer
 
     def do_GET(self) -> None:
+        path = urllib.parse.urlsplit(self.path).path
+        if path in ("/", "/ui"):
+            self._redirect("ui/")
+            return
+        if path.startswith(UI_PREFIX):
+            self._static(path.removeprefix(UI_PREFIX) or "index.html")
+            return
         if not self._authorized():
             return
         orchestrator = self.server.orchestrator
@@ -42,6 +59,10 @@ class Handler(BaseHTTPRequestHandler):
             })
         elif self.path == "/status":
             self._answer(orchestrator.status)
+        elif self.path == "/profiles":
+            self._answer(orchestrator.profiles)
+        elif self.path == "/needs":
+            self._answer(orchestrator.needs)
         else:
             self._send(HTTPStatus.NOT_FOUND, {"error": f"no such path: {self.path}"})
 
@@ -69,6 +90,28 @@ class Handler(BaseHTTPRequestHandler):
             self._send(HTTPStatus.BAD_GATEWAY, {"error": f"model server unreachable: {error}"})
         except (subprocess.SubprocessError, OSError) as error:
             self._send(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": f"nvidia-smi failed: {error}"})
+        except MeasurementError as error:
+            self._send(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(error)})
+
+    def _static(self, name: str) -> None:
+        file = ui_file(name)
+        if file is None:
+            self._send(HTTPStatus.NOT_FOUND, {"error": f"no such file: {name}"})
+            return
+        data = file.read_bytes()
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", UI_CONTENT_TYPES[file.suffix])
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _redirect(self, location: str) -> None:
+        # Relative, so that the page also works behind a proxy under a path of its own.
+        self.send_response(HTTPStatus.FOUND)
+        self.send_header("Location", location)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def _authorized(self) -> bool:
         refusal = authorization_error(self.client_address[0], self.headers.get("Authorization", ""), self.server.token)
@@ -98,6 +141,17 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: Any) -> None:
         # The hook asks on every prompt; /free logs its own line, the rest stays quiet.
         pass
+
+
+def ui_file(name: str) -> Path | None:
+    """The file of the page behind ``name``; None for anything else (a subfolder, a hidden file, another
+    kind of file, a way out of the folder)."""
+    if not name or "/" in name or "\\" in name or name.startswith("."):
+        return None
+    file = UI_DIR / name
+    if file.suffix not in UI_CONTENT_TYPES or not file.is_file():
+        return None
+    return file
 
 
 def authorization_error(client_ip: str, header: str, token: str | None) -> tuple[HTTPStatus, str] | None:

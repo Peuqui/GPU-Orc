@@ -34,6 +34,21 @@ Was der Dienst auf den Karten dieses Rechners hält; Engines auf anderen Rechner
 - `busy`: STT eine laufende Transkription, TTS eine laufende Vorlesung, die die Engine hält, oder ein
   Start der Engine, der gerade läuft.
 
+## `GET /gpu/needs`
+
+```json
+{"needs": [
+  {"item": "parakeet-fp32", "need_mib": 3712, "source": "measured", "default": true},
+  {"item": "qwen3local", "need_mib": 6024, "source": "estimate"}
+]}
+```
+
+Was jedes Element des Dienstes auf einer Karte braucht, ob es gerade läuft oder nicht, für die Planung von
+GPU-Orc. `need_mib` ist der nackte Bedarf ohne eigenen Puffer (`null`, wenn unbekannt), `source` sagt woher:
+`measured` (Burn-in), `configured` (eingestellt), `estimate` (eingebauter Schätzwert), `unknown`. `default`
+(nur wo es eines gibt) ist das Modell, das der Dienst ohne Angabe in der Anfrage auf die GPU lädt. Ohne
+Token auf dem eigenen Rechner, wie `/gpu/holders`.
+
 ## `POST /gpu/release`
 
 ```json

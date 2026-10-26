@@ -1,0 +1,105 @@
+:root {
+  color-scheme: light dark;
+  --bg: #f6f7f9; --panel: #ffffff; --text: #1d2330; --muted: #5d667a; --line: #d9dde6;
+  --heading: #b45309; --accent: #c4161c; --accent-text: #ffffff; --ok: #1a7f37; --warn: #9a6700; --bad: #c4161c; --code: #eef0f4;
+}
+:root[data-theme="dark"] {
+  --bg: #0f131b; --panel: #171d28; --text: #e6e9f0; --muted: #98a1b5; --line: #2b3446;
+  --heading: #fbbf24; --accent: #e5333a; --accent-text: #ffffff; --ok: #4cc26a; --warn: #e3b341; --bad: #ff6b6b; --code: #202838;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f131b; --panel: #171d28; --text: #e6e9f0; --muted: #98a1b5; --line: #2b3446;
+    --heading: #fbbf24; --accent: #e5333a; --accent-text: #ffffff; --ok: #4cc26a; --warn: #e3b341; --bad: #ff6b6b; --code: #202838;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.45 system-ui, sans-serif; }
+.top { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 24px; padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--line); }
+h1, h2, h3 { color: var(--heading); }
+h1 { margin: 0; font-size: 18px; }
+h2 { margin: 0 0 8px; font-size: 16px; }
+h3 { margin: 16px 0 6px; font-size: 14px; font-weight: 600; }
+nav { display: flex; gap: 4px; flex: 1; flex-wrap: wrap; }
+nav button { border: 0; background: none; color: var(--muted); padding: 6px 10px; border-radius: 6px; cursor: pointer; font: inherit; }
+nav button[aria-selected="true"] { background: var(--code); color: var(--text); font-weight: 600; }
+.tools { display: flex; align-items: center; gap: 8px; }
+main { max-width: 1100px; margin: 0 auto; padding: 16px; }
+.view { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
+.view[hidden], #message[hidden] { display: none; }
+/* Fixed at the top: a message inside the page is out of sight when the page is scrolled. */
+#message { position: fixed; left: 50%; top: 16px; cursor: pointer; transform: translateX(-50%); z-index: 10; max-width: min(92vw, 640px); padding: 10px 14px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); box-shadow: 0 4px 16px rgb(0 0 0 / 0.35); }
+#message.error { border-color: var(--bad); color: var(--bad); }
+#message.ok { border-color: var(--ok); color: var(--ok); }
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th, td { padding: 6px 8px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+th { color: var(--muted); font-weight: 600; white-space: nowrap; }
+.table-scroll { overflow-x: auto; }
+input, select, textarea, button { font: inherit; color: inherit; }
+input[type="text"], input[type="number"], select, textarea { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; }
+input[type="number"] { width: 7em; }
+td input[type="text"] { width: 100%; min-width: 9em; }
+td input[type="number"] { width: 100%; min-width: 5.5em; }
+td select { max-width: 100%; }
+/* A line of a label and its field: the field takes what is left. */
+label.row input[type="text"] { flex: 1 1 20em; min-width: 0; }
+textarea { width: 100%; min-height: 90px; resize: vertical; }
+button { background: var(--code); border: 1px solid var(--line); border-radius: 6px; padding: 5px 12px; cursor: pointer; }
+button:hover { filter: brightness(1.15); }
+button:active { transform: translateY(1px); filter: brightness(0.85); }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+button.small { padding: 3px 8px; font-size: 13px; }
+/* A button that looks like a link: a voice in the list, a click opens its settings. */
+button.link { background: none; border: 0; padding: 0; text-align: left; color: var(--heading); text-decoration: underline; cursor: pointer; }
+button.link[aria-pressed="true"] { font-weight: 700; }
+.editor { margin-top: 12px; padding: 12px; border: 1px solid var(--line); border-radius: 8px; }
+button:disabled { opacity: 0.5; cursor: default; }
+.actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 6px 0; }
+.muted { color: var(--muted); }
+.status { font-weight: 600; }
+.status.loaded { color: var(--ok); } .status.busy { color: var(--warn); } .status.idle { color: var(--muted); }
+code, .hint { font-family: ui-monospace, monospace; font-size: 13px; background: var(--code); padding: 1px 5px; border-radius: 4px; }
+.hint { display: inline-block; max-width: 36em; white-space: pre-wrap; word-break: break-word; }
+.tag { font-size: 12px; color: var(--muted); border: 1px solid var(--line); border-radius: 10px; padding: 0 6px; margin-left: 4px; }
+/* Pairs of fields in one line each (the pronunciations). */
+.pairs { display: grid; grid-template-columns: 1fr 1fr auto; gap: 6px 8px; align-items: center; }
+.pairs input { width: 100%; min-width: 0; }
+/* The buttons of a row stay in one line. */
+.buttons { display: flex; gap: 6px; white-space: nowrap; }
+@media (max-width: 640px) {
+  .top nav { order: 3; flex-basis: 100%; }
+  main { padding: 10px; }
+  .view { padding: 12px; }
+  /* A table of rows as cards: every cell carries its heading in data-label. */
+  table.cards thead { display: none; }
+  table.cards, table.cards tbody, table.cards tr, table.cards td { display: block; }
+  table.cards tr { border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; margin-bottom: 10px; }
+  table.cards td { display: flex; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 0; padding: 4px 0; }
+  table.cards td::before { content: attr(data-label); color: var(--muted); flex: 0 0 38%; }
+  table.cards td:empty { display: none; }
+  table.cards td input, table.cards td select { flex: 1; min-width: 0; }
+  table.cards td:first-child { display: block; font-weight: 600; }
+  table.cards td:first-child::before { content: none; }
+  table.cards td:first-child input { width: 100%; }
+}
+/* The transcript of the test: as long as it is, selectable, line breaks kept. */
+.transcript { white-space: pre-wrap; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 10px; margin: 8px 0; }
+label.check { display: inline-flex; align-items: center; gap: 6px; }
+.fields { display: grid; grid-template-columns: max-content 1fr; gap: 8px 14px; align-items: center; }
+.fields > label { color: var(--muted); }
+@media (max-width: 640px) { .fields { grid-template-columns: 1fr; gap: 2px; } .fields > label { margin-top: 8px; } }
+fieldset { border: 1px solid var(--line); border-radius: 8px; margin: 12px 0; padding: 8px 14px 12px; }
+legend { color: var(--heading); font-weight: 600; padding: 0 6px; }
+fieldset > p { margin: 4px 0 8px; }
+/* The list the automatic mode goes through: one line per entry, a switched-off one dimmed. */
+.chain { margin: 6px 0; }
+.chain.off > :not(.switch):not(button) { opacity: 0.45; }
+.chain .muted { flex: 1; text-align: right; }
+label.switch { position: relative; display: inline-block; width: 40px; height: 22px; flex: none; }
+label.switch input { opacity: 0; width: 0; height: 0; }
+label.switch span { position: absolute; inset: 0; background: var(--line); border-radius: 22px; cursor: pointer; transition: background 0.15s; }
+label.switch span::before { content: ""; position: absolute; width: 16px; height: 16px; left: 3px; top: 3px; background: var(--panel); border-radius: 50%; transition: transform 0.15s; }
+label.switch input:checked + span { background: var(--heading); }
+label.switch input:checked + span::before { transform: translateX(18px); }
+td input[type="checkbox"] { width: 18px; height: 18px; }

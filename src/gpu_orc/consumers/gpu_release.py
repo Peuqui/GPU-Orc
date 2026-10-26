@@ -1,9 +1,10 @@
 """A service with the suites' common GPU release API (STT-Suite, TTS-Suite).
 
 ``GET /gpu/holders`` names what the service holds on this machine's GPUs, the cards taken from the
-process's configuration. ``POST /gpu/release`` takes ``items``, ``force`` and ``reason`` and answers one
-result per item: ``released`` (the process with the CUDA context has ended, proven by the service),
-``not_running``, ``busy`` (left alone, only without force) or ``failed`` (the end could not be proven).
+process's configuration. ``GET /gpu/needs`` names what each of its items needs on a card.
+``POST /gpu/release`` takes ``items``, ``force`` and ``reason`` and answers one result per item:
+``released`` (the process with the CUDA context has ended, proven by the service), ``not_running``,
+``busy`` (left alone, only without force) or ``failed`` (the end could not be proven).
 """
 
 from __future__ import annotations
@@ -11,10 +12,11 @@ from __future__ import annotations
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Any
 
 from ..gpus import Gpu
 from ..http_json import request_json
-from ..model import Action, ConsumerError, Holder, Outcome
+from ..model import Action, ConsumerError, Holder, Need, NeedSource, Outcome
 
 POLL_S = 2.0
 # The forcing request itself must still fit before the overall deadline.
@@ -47,6 +49,24 @@ class GpuRelease:
                 busy=entry.get("busy") if isinstance(entry.get("busy"), bool) else None,
             ))
         return holders
+
+    def needs(self) -> list[Need]:
+        status, body = request_json("GET", f"{self.url}/gpu/needs")
+        if status != 200 or not isinstance(body, dict) or not isinstance(body.get("needs"), list):
+            raise ConsumerError(f"{self.name}: /gpu/needs answered HTTP {status}")
+        try:
+            return [
+                Need(
+                    consumer=self.name,
+                    item=str(entry["item"]),
+                    need_mib=int(entry["need_mib"]) if entry["need_mib"] is not None else None,
+                    source=_need_source(entry["source"]),
+                    default=entry.get("default") is True,
+                )
+                for entry in body["needs"]
+            ]
+        except (KeyError, TypeError, ValueError) as error:
+            raise ConsumerError(f"{self.name}: /gpu/needs has an unknown form: {error!r}") from error
 
     def release(self, holders: Sequence[Holder], *, reason: str, deadline: float) -> list[Action]:
         started = time.monotonic()
@@ -100,3 +120,13 @@ class GpuRelease:
 
 def _waited(started: float) -> float:
     return round(time.monotonic() - started, 1)
+
+
+_NEED_SOURCES: tuple[NeedSource, ...] = ("measured", "configured", "estimate", "unknown")
+
+
+def _need_source(value: Any) -> NeedSource:
+    for source in _NEED_SOURCES:
+        if value == source:
+            return source
+    raise ValueError(f"unknown need source {value!r}")

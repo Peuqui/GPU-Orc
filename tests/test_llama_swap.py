@@ -8,6 +8,7 @@ from fakes import GPUS, FakeService, answers
 
 from gpu_orc.consumers.llama_swap import LlamaSwap
 from gpu_orc.gpus import GpuSpecError
+from gpu_orc.measurements import Measurements
 from gpu_orc.model import ConsumerError, Holder, UnknownModel
 
 CONFIG = {
@@ -89,3 +90,11 @@ def test_release_checks_that_the_model_is_gone(config_file: Path) -> None:
     with FakeService(routes).running() as fake:
         actions = LlamaSwap("ls", fake.url, config_file).release(holders, reason="r", deadline=time.monotonic() + 60)
     assert [(a.item, a.outcome) for a in actions] == [("describer", "released"), ("embedder", "error")]
+
+
+def test_profiles_are_read_from_the_config(config_file: Path) -> None:
+    profiles = {p.name: p for p in LlamaSwap("ls", "http://unused", config_file).profiles(GPUS, Measurements())}
+    assert set(profiles) == {"main-a", "main-all", "main-vlm-b", "describer", "embedder", "broken", "main-vllm"}
+    assert profiles["main-vllm"].claim_mib == {"GPU-cccc2222": round(0.9 * 49152)}
+    assert profiles["describer"].persistent and not profiles["main-a"].persistent
+    assert profiles["broken"].problem is not None

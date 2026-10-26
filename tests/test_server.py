@@ -11,7 +11,7 @@ from fakes import GPUS
 from test_orchestrator import FakeService, model, server
 
 from gpu_orc.orchestrator import Orchestrator, RequestError
-from gpu_orc.server import GpuOrcServer, authorization_error, parse_free_request
+from gpu_orc.server import UI_DIR, GpuOrcServer, authorization_error, parse_free_request, ui_file
 
 
 @pytest.fixture
@@ -87,3 +87,37 @@ def test_authorization() -> None:
     assert authorization_error("203.0.113.7", "Bearer wrong", "t") == (HTTPStatus.FORBIDDEN, "wrong token")
     assert authorization_error("203.0.113.7", "Bearer t", "t") is None
     assert authorization_error("203.0.113.7", "Bearer t", None) == (HTTPStatus.FORBIDDEN, "wrong token")
+
+
+def test_profiles_and_needs(url: str) -> None:
+    status, body = call(f"{url}/profiles")
+    assert status == 200 and [profile["name"] for profile in body["profiles"]] == ["big", "small-vlm", "elsewhere"]
+    assert call(f"{url}/needs") == (200, {"needs": [], "errors": []})
+
+
+def fetch(url: str) -> tuple[int, str, str, bytes]:
+    try:
+        with urllib.request.urlopen(url, timeout=10) as response:
+            return response.status, response.headers["Content-Type"], response.geturl(), response.read()
+    except urllib.error.HTTPError as error:
+        return error.code, error.headers["Content-Type"], url, error.read()
+
+
+def test_the_page_is_served_and_the_root_leads_to_it(url: str) -> None:
+    status, kind, final, body = fetch(f"{url}/")
+    assert (status, kind, final) == (200, "text/html; charset=utf-8", f"{url}/ui/")
+    assert b"<title>GPU-Orc</title>" in body
+    status, kind, _, body = fetch(f"{url}/ui/app.js")
+    assert (status, kind) == (200, "text/javascript; charset=utf-8") and b"import" in body
+    assert fetch(f"{url}/ui/..%2Fserver.py")[0] == 404
+
+
+@pytest.mark.parametrize("name", ["../server.py", "sub/app.js", ".hidden.js", "README.md", "missing.js", ""])
+def test_only_files_of_the_page_are_served(name: str) -> None:
+    assert ui_file(name) is None
+
+
+def test_every_file_the_page_loads_is_there() -> None:
+    for name in ("index.html", "style.css", "app.js", "api.js", "dom.js", "format.js", "i18n.js", "cards.js",
+                 "profiles.js", "needs.js"):
+        assert ui_file(name) == UI_DIR / name

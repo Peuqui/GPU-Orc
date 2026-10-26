@@ -39,6 +39,9 @@ Karten freiräumt, statt dass jeder Aufrufer eine eigene Kopie dieser Logik mitb
 |---|---|
 | `GET /health` | Version, `free_timeout_s` und das HTTP-Timeout, das Aufrufer nehmen sollen |
 | `GET /status` | je Karte: Speicher, Halter, nicht zugeordneter Speicher, was andere Programme noch belegen dürfen (`available_mib`); die Schlange; Verbraucher, die nichts melden konnten |
+| `GET /profiles` | die Profile des Modellservers: Karten, Backend, Kontext, KV-Blöcke, Variante (für welche Zusatzmodelle Platz bleibt) und was jedes je Karte nimmt (gemessen, Anteil oder unbekannt) |
+| `GET /needs` | was die Zusatzmodelle auf einer Karte brauchen: die Engines der Suiten (deren `GET /gpu/needs`) und die Bildmodelle der Modellserver |
+| `GET /ui/` | die Weboberfläche (Karten, Profile, Bedarfe), wie bei den Suiten |
 | `POST /free` | Karten freiräumen: `{"gpus": [0, "GPU-…"] \| "all", ...}` oder `{"model": "<name>", ...}` |
 
 `POST /free` nimmt genau eine von zwei Formen, dazu `reason` (Pflicht), `keep` und `dry_run`:

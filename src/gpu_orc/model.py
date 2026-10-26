@@ -4,9 +4,13 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Literal, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
 
 from .gpus import Gpu
+
+if TYPE_CHECKING:
+    from .measurements import Measurements
+    from .profiles import Profile
 
 Outcome = Literal[
     "released", "released_forced", "not_freed", "refused_busy", "timeout", "kept", "error", "would_release"
@@ -27,6 +31,22 @@ class Holder:
     # Share of each of its cards the item may fill while it runs, allocated yet or not (vLLM's
     # --gpu-memory-utilization): memory nvidia-smi shows as free there is not free for others.
     memory_fraction: float | None = None
+
+
+NeedSource = Literal["measured", "configured", "estimate", "unknown"]
+
+
+@dataclass(frozen=True)
+class Need:
+    """What one item of a consumer needs on a card, as its service reports it (``GET /gpu/needs``) or, for
+    a vision model of the model server, as GPU-Orc measured it. ``default`` = the item the service loads on
+    a GPU when a request names none."""
+
+    consumer: str
+    item: str
+    need_mib: int | None
+    source: NeedSource
+    default: bool = False
 
 
 @dataclass(frozen=True)
@@ -60,6 +80,13 @@ class Consumer(Protocol):
 
 
 @runtime_checkable
+class NeedsReporter(Consumer, Protocol):
+    def needs(self) -> list[Need]:
+        """What each item needs on a card, running or not. Raises ConsumerError."""
+        ...
+
+
+@runtime_checkable
 class ModelServer(Consumer, Protocol):
     def is_running(self, model: str) -> bool:
         """Whether the model is loaded or loading. Raises ConsumerError."""
@@ -71,4 +98,8 @@ class ModelServer(Consumer, Protocol):
 
     def evicts_persistent(self, model: str) -> bool:
         """Whether loading the model evicts this server's persistent models from shared GPUs."""
+        ...
+
+    def profiles(self, gpus: Sequence[Gpu], measurements: Measurements) -> list[Profile]:
+        """Every profile of the server's config. Raises ConsumerError."""
         ...

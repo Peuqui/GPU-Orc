@@ -8,8 +8,10 @@ import pytest
 from fakes import GPUS
 
 from gpu_orc.gpus import Gpu, GpuSpecError
-from gpu_orc.model import Action, Consumer, ConsumerError, Holder, UnknownModel
+from gpu_orc.measurements import Measurements, VisionMeasurement
+from gpu_orc.model import Action, Consumer, ConsumerError, Holder, Need, UnknownModel
 from gpu_orc.orchestrator import FreeRequest, ModelServerUnreachable, NotFound, Orchestrator, RequestError
+from gpu_orc.profiles import Profile, Variant
 from gpu_orc.verify import VerifySettings
 
 A, B, C = (gpu.uuid for gpu in GPUS)
@@ -82,6 +84,22 @@ class FakeServer(FakeService):
 
     def evicts_persistent(self, model: str) -> bool:
         return model not in self.no_eviction and not any(h.item == model and h.persistent for h in self.held)
+
+    def profiles(self, gpus: Sequence[Gpu], measurements: Measurements) -> list[Profile]:
+        if self.unreachable:
+            raise ConsumerError("config unreadable")
+        return [Profile(name, "vllm", tuple(sorted(cards)), False, 307200, 0.9, 3500, Variant(name),
+                        {uuid: 1000 for uuid in cards}, "fraction", None) for name, cards in self.models.items()]
+
+
+@dataclass
+class FakeReporter(FakeService):
+    reported: list[Need] = field(default_factory=list)
+
+    def needs(self) -> list[Need]:
+        if self.fail:
+            raise ConsumerError(f"{self.name} is down")
+        return list(self.reported)
 
 
 MODELS = {"big": frozenset({A, B}), "small-vlm": frozenset({B}), "elsewhere": frozenset({C})}
@@ -318,3 +336,33 @@ def test_available_leaves_a_model_the_share_it_may_fill() -> None:
 def test_without_every_consumer_nobody_can_say_what_is_available() -> None:
     status = make(service("tts", fail=True), server()).status()
     assert [g["available_mib"] for g in status["gpus"]] == [None, None, None]
+
+
+def test_needs_are_the_suites_reports_and_the_measured_vision_models() -> None:
+    tts = FakeReporter("tts", reported=[Need("tts", "xtts", 3680, "estimate")])
+    measured = Measurements(vision={"vl-4b": VisionMeasurement(7396, 24576, "2026-10-09", "x")})
+    orchestrator = Orchestrator([tts, server()], 30, query=lambda: list(GPUS), verify_settings=FAST,
+                                measurements=lambda: measured, vision_models={"ls": ["vl-4b", "vl-new"]})
+    assert orchestrator.needs() == {"needs": [
+        {"consumer": "tts", "item": "xtts", "need_mib": 3680, "source": "estimate", "default": False},
+        {"consumer": "ls", "item": "vl-4b", "need_mib": 7396, "source": "measured", "default": False},
+        {"consumer": "ls", "item": "vl-new", "need_mib": None, "source": "unknown", "default": False},
+    ], "errors": []}
+
+
+def test_a_suite_that_cannot_report_its_needs_is_named() -> None:
+    xtts = Need("tts", "xtts", 3680, "estimate")
+    answer = make(FakeReporter("stt", fail=True), FakeReporter("tts", reported=[xtts])).needs()
+    assert [need["item"] for need in answer["needs"]] == ["xtts"]
+    assert answer["errors"] == [{"consumer": "stt", "detail": "stt is down"}]
+
+
+def test_profiles_come_from_the_model_servers() -> None:
+    answer = make(service("stt"), server()).profiles()
+    assert answer["errors"] == []
+    big = next(profile for profile in answer["profiles"] if profile["name"] == "big")
+    assert big["model_server"] == "ls" and big["cards"] == sorted([A, B]) and big["claim_source"] == "fraction"
+    assert big["variant"] == {"base": "big", "tts": None, "vlm": None, "speed": False, "describer": False,
+                              "describer_gpu": None}
+    assert make(server(unreachable=True)).profiles() == {"profiles": [], "errors": [
+        {"consumer": "ls", "detail": "config unreadable"}]}

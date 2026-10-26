@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>GPU-Orc</title>
+  <link rel="icon" href="data:," />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="top">
+    <h1>GPU-Orc</h1>
+    <nav id="tabs" role="tablist"></nav>
+    <div class="tools">
+      <button id="token" type="button" class="small"></button>
+      <button id="language" type="button" class="small"></button>
+      <button id="theme" type="button" class="small"></button>
+    </div>
+  </header>
+  <main>
+    <div id="message" role="status" hidden></div>
+    <section id="view-cards" class="view"></section>
+    <section id="view-profiles" class="view" hidden></section>
+    <section id="view-needs" class="view" hidden></section>
+  </main>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
