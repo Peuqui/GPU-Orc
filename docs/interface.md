@@ -194,7 +194,8 @@ GPU-Orc refuses other fields with `400`.
   the memory that holder has in use: the item is being replaced (the STT worker switching models).
 - **Giving way:** Where no GPU fits, idle side models of a suite after the asking one in `priority` (config)
   may have to let go: the ones on the GPU where the fewest must go, the lowest priority first, without force
-  and without waiting. One that is busy stays. Then GPU-Orc measures again until `verify_timeout_s`.
+  and without waiting. One that is busy stays. Then GPU-Orc measures again until `verify_timeout_s`; the
+  whole answer stays within `free_timeout_s`, as for `/free` (a caller waits `caller_timeout_s` of `/health`).
 - **Promise:** The answer's GPU keeps `need_mib` for the item for `reserve_s` (config, default 60 s), so
   that a second request does not get the same room before the item shows in `/gpu/holders`; after that its
   own claim counts. A promise runs out by itself, also when the suite never starts the item.

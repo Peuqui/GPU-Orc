@@ -197,7 +197,8 @@ Andere Felder weist GPU-Orc mit `400` ab.
 - **Weichen:** Passt keine Karte, müssen untätige Zusatzmodelle einer Suite, die in `priority` (Config) nach
   der fragenden steht, freigeben: die auf der Karte, wo am wenigsten weichen müssen, die mit dem niedrigsten
   Vorrang zuerst, ohne Zwang und ohne Warten. Ein beschäftigtes bleibt. Danach misst GPU-Orc bis
-  `verify_timeout_s` nach.
+  `verify_timeout_s` nach; die ganze Antwort bleibt wie bei `/free` innerhalb von `free_timeout_s` (ein Aufrufer
+  wartet `caller_timeout_s` aus `/health`).
 - **Zusage:** Die Karte der Antwort hält `need_mib` für das Element `reserve_s` lang fest (Config, Standard
   60 s), damit eine zweite Anfrage nicht denselben Platz bekommt, bevor das Element in `/gpu/holders`
   erscheint; danach zählt sein eigener Anspruch. Eine Zusage läuft von selbst ab, auch wenn die Suite das

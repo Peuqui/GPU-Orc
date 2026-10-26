@@ -219,6 +219,7 @@ class Orchestrator:
         things are, else one where idle side models of a service with lower priority let go first; no card, and
         why, when there is none."""
         started = time.monotonic()
+        deadline = started + self._free_timeout_s  # the whole answer, as for /free: callers wait caller_timeout_s
         self._side_model_server(request.consumer)
         gpus = self._query()
         allowed = self._allowed_cards(request, gpus)
@@ -227,8 +228,8 @@ class Orchestrator:
             card, eviction, why = self._choose_card(request, gpus, report, allowed)
         actions: list[Action] = []
         if eviction is not None:
-            actions = self._evict(request, eviction, report)
-            card, why = self._after_eviction(request, eviction.room.gpu.uuid, actions)
+            actions = self._evict(request, eviction, report, deadline)
+            card, why = self._after_eviction(request, eviction.room.gpu.uuid, actions, deadline)
         result = {
             "card": None if card is None else {"index": card.index, "uuid": card.uuid},
             "why": why,
@@ -302,9 +303,8 @@ class Orchestrator:
 
         return rank
 
-    def _evict(self, request: PlaceRequest, eviction: Eviction, report: _Report) -> list[Action]:
+    def _evict(self, request: PlaceRequest, eviction: Eviction, report: _Report, deadline: float) -> list[Action]:
         reason = f"room for {request.consumer}:{request.item}: {request.reason}"
-        deadline = time.monotonic() + self._free_timeout_s
         wanted = {(claim.consumer, claim.item) for claim in eviction.claims}
         actions: list[Action] = []
         for name, holders in report.holders.items():
@@ -318,14 +318,16 @@ class Orchestrator:
                 actions.extend(Action(name, holder.item, "error", str(error)) for holder in evicted)
         return actions
 
-    def _after_eviction(self, request: PlaceRequest, uuid: str, actions: Sequence[Action]) -> tuple[Gpu | None, str | None]:
-        """The card once the others let go and its memory came back (within the verify limit), promised anew;
-        else no card and why."""
+    def _after_eviction(
+        self, request: PlaceRequest, uuid: str, actions: Sequence[Action], deadline: float,
+    ) -> tuple[Gpu | None, str | None]:
+        """The card once the others let go and its memory came back (within the verify limit, not past the
+        deadline), promised anew; else no card and why."""
         refused = [action for action in actions if action.outcome != "released"]
         if refused:
             self._reservations.drop(request.consumer, request.item)
             return None, "did not let go: " + ", ".join(f"{a.consumer}:{a.item} ({a.outcome})" for a in refused)
-        limit = time.monotonic() + self._verify.timeout_s
+        limit = min(time.monotonic() + self._verify.timeout_s, deadline)
         while True:
             gpus = self._query()
             report = self._collect(gpus)

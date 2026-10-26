@@ -7,6 +7,7 @@ from test_orchestrator import FAST, FakeReporter, Machine, model, server, servic
 from gpu_orc.claims import PlaceSettings
 from gpu_orc.model import Consumer, Holder
 from gpu_orc.orchestrator import FreeRequest, NotFound, Orchestrator, PlaceRequest, RequestError
+from gpu_orc.verify import VerifySettings
 
 A, B, C = (gpu.uuid for gpu in GPUS)
 SETTINGS = PlaceSettings(headroom_mib=512, reserve_s=60.0, priority=("tts", "stt"))
@@ -136,6 +137,22 @@ def test_one_that_got_busy_meanwhile_is_not_waited_for() -> None:
     answer = place(orchestrator, "qwen", 20000)
     assert (card(answer), answer["why"]) == (None, "did not let go: stt:gpu-worker (refused_busy)")
     assert orchestrator.status()["gpus"][2]["reservations"] == []
+
+
+def test_the_answer_comes_within_the_release_deadline() -> None:
+    # The released memory never comes back: the check ends with the deadline of the whole answer, as for /free,
+    # not a whole verify limit after the release.
+    worker = Holder("stt", "gpu-worker", frozenset({C}), memory_mib={C: 30000}, need_mib=30000, busy=False)
+    machine = Machine({A: 49000, B: 32000, C: 30000})
+    stt = FakeReporter("stt", [worker], machine, keeps_memory=True)
+    ls = server(model("big", A, B), claims={"big": {A: 49000, B: 32000}})
+    slow_check = VerifySettings(timeout_s=30.0, min_freed_mib=256, poll_s=0.05)
+    orchestrator = Orchestrator((suite("tts"), stt, ls), 0.3, query=machine.query, verify_settings=slow_check,
+                                place_settings=SETTINGS, clock=Clock())
+    answer = place(orchestrator, "qwen", 20000)
+    assert card(answer) is None
+    assert answer["why"].endswith("MiB room after the release")
+    assert answer["duration_s"] < 2
 
 
 def test_free_keeps_the_models_cards_until_it_loads() -> None:
