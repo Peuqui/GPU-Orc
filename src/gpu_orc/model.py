@@ -62,6 +62,15 @@ class ModelServer(Consumer, Protocol):
         """Whether the model is loaded or loading. Raises ConsumerError."""
         ...
 
+    def loading(self) -> list[str]:
+        """The models this server is loading right now, without its persistent helpers: those load
+        into their own room, a big model takes the cards as it comes. Raises ConsumerError."""
+        ...
+
+    def is_helper(self, model: str) -> bool:
+        """Whether the model is one of this server's persistent helpers."""
+        ...
+
     def model_gpu_uuids(self, model: str, gpus: Sequence[Gpu]) -> frozenset[str]:
         """The GPUs the model would use. Raises UnknownModel or GpuSpecError."""
         ...

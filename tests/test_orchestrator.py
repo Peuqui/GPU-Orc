@@ -67,6 +67,16 @@ class FakeServer(FakeService):
     models: dict[str, frozenset[str]] = field(default_factory=dict)
     no_eviction: tuple[str, ...] = ()
     unreachable: bool = False
+    starting: tuple[str, ...] = ()
+    helpers: tuple[str, ...] = ()
+
+    def loading(self) -> list[str]:
+        if self.unreachable:
+            raise ConsumerError("down")
+        return list(self.starting)
+
+    def is_helper(self, model: str) -> bool:
+        return model in self.helpers
 
     def is_running(self, model: str) -> bool:
         if self.unreachable:
@@ -99,9 +109,11 @@ def server(*held: Holder, machine: Machine | None = None, **kwargs: Any) -> Fake
     return FakeServer("ls", list(held), machine, models=MODELS, **kwargs)
 
 
-def make(*consumers: Consumer, machine: Machine | None = None, timeout: float = 30.0) -> Orchestrator:
+def make(
+    *consumers: Consumer, machine: Machine | None = None, timeout: float = 30.0, load_grace_s: float = 15.0,
+) -> Orchestrator:
     query = machine.query if machine is not None else lambda: list(GPUS)
-    return Orchestrator(consumers, timeout, query=query, verify_settings=FAST)
+    return Orchestrator(consumers, timeout, query=query, verify_settings=FAST, load_grace_s=load_grace_s)
 
 
 def outcomes(result: dict[str, Any]) -> list[tuple[str, str, str]]:
@@ -302,4 +314,39 @@ def test_status_attributes_memory_only_where_reported() -> None:
     assert by_index[2]["unattributed_mib"] == 0 and by_index[2]["holders"] == []
     assert status["queue"] == {"running": False, "waiting": 0, "running_since_s": None}
 
+
+def test_loading_names_what_the_model_server_is_loading() -> None:
+    assert make(server(starting=("big",))).loading() == {"loading": ["big"]}
+    assert make(server()).loading() == {"loading": []}
+
+
+def test_a_model_counts_as_loading_from_the_free_that_clears_for_it() -> None:
+    m = Machine()
+    slow = service("stt", Holder("stt", "gpu-worker", frozenset({A})), machine=m, release_delay_s=0.5)
+    orchestrator = make(slow, server(machine=m), machine=m, load_grace_s=0.3)
+    worker = in_background(orchestrator, FreeRequest(reason="load", model="big"))
+    time.sleep(0.2)
+    assert orchestrator.loading() == {"loading": ["big"]}  # still clearing, the server knows nothing yet
+    worker.join()
+    assert orchestrator.loading() == {"loading": ["big"]}  # cleared, the load is about to start
+    time.sleep(0.4)
+    assert orchestrator.loading() == {"loading": []}  # nobody loaded it after all
+
+
+def test_a_dry_run_and_a_running_model_announce_nothing() -> None:
+    orchestrator = make(server(model("big", A, B)))
+    orchestrator.free(FreeRequest(reason="load", model="big"))
+    orchestrator.free(FreeRequest(reason="look", model="elsewhere", dry_run=True))
+    assert orchestrator.loading() == {"loading": []}
+
+
+def test_a_model_server_that_does_not_answer_is_no_green_light() -> None:
+    with pytest.raises(ModelServerUnreachable):
+        make(server(unreachable=True)).loading()
+
+
+def test_clearing_for_a_helper_leaves_the_light_green() -> None:
+    orchestrator = make(server(helpers=("small-vlm",)))
+    orchestrator.free(FreeRequest(reason="describer", model="small-vlm"))
+    assert orchestrator.loading() == {"loading": []}
 

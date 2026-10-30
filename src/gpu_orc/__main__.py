@@ -24,7 +24,9 @@ def main(argv: list[str] | None = None) -> int:
     except ConfigError as error:
         print(f"gpu-orc: {error}", file=sys.stderr)
         return 2
-    orchestrator = Orchestrator(config.consumers, config.free_timeout_s, verify_settings=config.verify)
+    orchestrator = Orchestrator(
+        config.consumers, config.free_timeout_s, verify_settings=config.verify, load_grace_s=config.load_grace_s,
+    )
     server = GpuOrcServer((config.host, config.port), orchestrator, config.token)
     names = ", ".join(consumer.name for consumer in config.consumers)
     print(f"gpu-orc listening on {config.host}:{config.port}, consumers: {names}", flush=True)

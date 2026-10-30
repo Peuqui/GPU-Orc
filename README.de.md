@@ -38,6 +38,7 @@ Karten freiräumt, statt dass jeder Aufrufer eine eigene Kopie dieser Logik mitb
 | Endpunkt | Zweck |
 |---|---|
 | `GET /health` | Version, `free_timeout_s` und das HTTP-Timeout, das Aufrufer nehmen sollen |
+| `GET /loading` | welche großen Modelle gerade laden, für alle, die etwas auf einer Karte starten wollen |
 | `GET /status` | je Karte: Speicher, Halter, nicht zugeordneter Speicher; die Schlange; Verbraucher, die nichts melden konnten |
 | `POST /free` | Karten freiräumen: `{"gpus": [0, "GPU-…"] \| "all", ...}` oder `{"model": "<name>", ...}` |
 

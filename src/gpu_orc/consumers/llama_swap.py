@@ -62,6 +62,15 @@ class LlamaSwap:
     def is_running(self, model: str) -> bool:
         return model in self._running()
 
+    def loading(self) -> list[str]:
+        _, persistent = self._read_config()
+        return [entry["model"] for entry in self._entries() if entry.get("state") == "starting"
+                and entry.get("model") and entry["model"] not in persistent]
+
+    def is_helper(self, model: str) -> bool:
+        _, persistent = self._read_config()
+        return model in persistent
+
     def model_gpu_uuids(self, model: str, gpus: Sequence[Gpu]) -> frozenset[str]:
         models, _ = self._read_config()
         if model not in models:
@@ -75,10 +84,13 @@ class LlamaSwap:
         return not any(fnmatch.fnmatchcase(model, pattern) for pattern in self.no_eviction_models)
 
     def _running(self) -> list[str]:
+        return [entry["model"] for entry in self._entries() if entry.get("model")]
+
+    def _entries(self) -> list[dict[str, Any]]:
         status, body = request_json("GET", f"{self.url}/running")
         if status != 200 or not isinstance(body, dict):
             raise ConsumerError(f"{self.name}: /running answered HTTP {status}")
-        return [entry["model"] for entry in body.get("running") or [] if entry.get("model")]
+        return body.get("running") or []
 
     def _read_config(self) -> tuple[dict[str, dict[str, str]], frozenset[str]]:
         """Environment per model and the members of persistent groups. Read on every call: the
