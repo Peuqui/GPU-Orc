@@ -71,12 +71,11 @@ Fehler kommen immer als `{"error": "<text>"}`. Ein unbekannter Pfad ergibt `404`
       "memory_total_mib": 49152,
       "memory_used_mib": 31200,
       "holders": [
-        {"consumer": "llama-swap", "item": "<modell>", "memory_mib": null, "busy": null, "persistent": false, "memory_fraction": 0.6},
-        {"consumer": "stt-suite", "item": "gpu-worker", "memory_mib": 3100, "busy": false, "persistent": null, "memory_fraction": null},
-        {"consumer": "tts-suite", "item": "<engine>", "memory_mib": 6024, "busy": false, "persistent": null, "memory_fraction": null}
+        {"consumer": "llama-swap", "item": "<modell>", "memory_mib": null, "busy": null, "persistent": false},
+        {"consumer": "stt-suite", "item": "gpu-worker", "memory_mib": 3100, "busy": false, "persistent": null},
+        {"consumer": "tts-suite", "item": "<engine>", "memory_mib": 6024, "busy": false, "persistent": null}
       ],
-      "unattributed_mib": null,
-      "available_mib": 10537
+      "unattributed_mib": null
     }
   ],
   "errors": []
@@ -90,17 +89,9 @@ Fehler kommen immer als `{"error": "<text>"}`. Ein unbekannter Pfad ergibt `404`
     die STT-Suite für den GPU-Worker (nicht für die Diarisierung). llama-swap meldet nur die Karten, also `null`.
   - `busy` melden nur die Suiten (Transkription, Vorlesung, Start), `persistent` nur der Modellserver
     (Mitglied einer Gruppe mit `persistent: true`). Das jeweils andere Feld ist `null`.
-  - `memory_fraction` ist der Anteil jeder seiner Karten, den ein Element füllen darf, ob schon belegt
-    oder nicht: bei llama-swap das `--gpu-memory-utilization` eines vLLM-Modells in dessen `cmd`, sonst `null`.
 - `unattributed_mib` ist der belegte Speicher minus dem, was die Halter melden. Er ist nur dann eine
   Zahl, wenn jeder Halter auf der Karte seinen Speicher meldet, sonst `null`. Auf einer Karte ohne
   Halter ist es der ganze belegte Speicher. GPU-Orc fasst Unbekanntes nie an.
-- `available_mib` ist, was ein weiteres Programm auf der Karte noch belegen darf: Kartenspeicher minus
-  dem größeren von belegtem Speicher und „Anteile (`memory_fraction` × Kartenspeicher) plus gemeldeter
-  Speicher der übrigen Halter“. Ein vLLM-Modell belegt einen Teil seines Anteils nur, während es rechnet;
-  nvidia-smi zeigt ihn dazwischen als frei, und wer ihn nimmt, lässt das Modell beim nächsten Rechnen
-  ohne Speicher (25.10.2026). Die Suiten wählen ihre Karte nach diesem Wert. `null`, solange ein
-  Verbraucher in `errors` steht: Dann weiß niemand, was frei ist.
 - `errors` nennt Verbraucher, die nicht sagen konnten, was sie halten
   (`[{"consumer": …, "detail": …}]`); ihre Halter fehlen dann in `holders`.
 - `500`, wenn nvidia-smi scheitert.
@@ -242,10 +233,6 @@ Anfrage neu, sie darf sich im Betrieb ändern.
 
 ## Aufrufer
 
-- **TTS-Suite und STT-Suite** lesen `GET /status`, bevor sie ein Modell auf einer GPU starten, und
-  nehmen `available_mib` als freien Speicher jeder Karte, damit sie nicht in den Anteil starten, den ein
-  vLLM-Modell noch füllen darf. Antwortet GPU-Orc nicht, starten sie nichts auf einer GPU (TTS geht zum
-  nächsten Eintrag, STT mit `device=auto` auf die CPU).
 - **AIfred** ruft GPU-Orc derzeit nicht auf: Seit dem 26.10.2026 räumt er die Karten wieder selbst frei
   (über `/gpu/release` der Suiten und llama-swap). Sein GPU-Orc-Client liegt im Branch `gpu-orc`.
 - **Agent-Orc** ruft GPU-Orc für Backends mit lokalen Modellen auf (Feld `gpu_orc` des Backends mit

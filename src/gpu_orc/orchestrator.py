@@ -261,7 +261,7 @@ class Orchestrator:
 
     def _status_body(self, gpus: Sequence[Gpu], report: _Report, uuids: Sequence[str] | frozenset[str]) -> dict[str, Any]:
         return {
-            "gpus": [_gpu_json(gpu, report.holders, complete=not report.errors) for gpu in gpus if gpu.uuid in uuids],
+            "gpus": [_gpu_json(gpu, report.holders) for gpu in gpus if gpu.uuid in uuids],
             "errors": report.errors,
         }
 
@@ -272,18 +272,8 @@ def _unkept_errors(report: _Report, keep: Sequence[str]) -> list[dict[str, str]]
     return [error for error in report.errors if error["consumer"] not in keep]
 
 
-def _available_mib(gpu: Gpu, on_card: Sequence[Holder]) -> int:
-    """Memory another program may take on the card: what is in use, or what the holders with a share
-    (``memory_fraction``) may fill plus what the others report, whichever is more. A vLLM model allocates
-    part of its share only while it computes; taking that would make it run out (25.10.2026)."""
-    claimed = sum(round(holder.memory_fraction * gpu.memory_total_mib) for holder in on_card
-                  if holder.memory_fraction is not None)
-    others = sum(holder.memory_mib.get(gpu.uuid, 0) for holder in on_card if holder.memory_fraction is None)
-    return max(0, gpu.memory_total_mib - max(gpu.memory_used_mib, claimed + others))
-
-
-def _gpu_json(gpu: Gpu, holders: Mapping[str, Sequence[Holder]], *, complete: bool) -> dict[str, Any]:
-    """One card of ``/status``; ``complete``: every consumer reported (else nobody can say what is available)."""
+def _gpu_json(gpu: Gpu, holders: Mapping[str, Sequence[Holder]]) -> dict[str, Any]:
+    """One card of ``/status``."""
     on_card = [holder for consumer_holders in holders.values() for holder in consumer_holders if gpu.uuid in holder.gpu_uuids]
     reported = [holder.memory_mib.get(gpu.uuid) for holder in on_card]
     if all(mib is not None for mib in reported):
@@ -303,12 +293,10 @@ def _gpu_json(gpu: Gpu, holders: Mapping[str, Sequence[Holder]], *, complete: bo
                 "memory_mib": holder.memory_mib.get(gpu.uuid),
                 "busy": holder.busy,
                 "persistent": holder.persistent,
-                "memory_fraction": holder.memory_fraction,
             }
             for holder in on_card
         ],
         "unattributed_mib": unattributed,
-        "available_mib": _available_mib(gpu, on_card) if complete else None,
     }
 
 
