@@ -2,7 +2,7 @@
 
 [Deutsch](interface.de.md)
 
-As of version 0.3.0. The suites' common release API, through which GPU-Orc talks to the STT-Suite and
+As of version 0.6.0. The suites' common release API, through which GPU-Orc talks to the STT-Suite and
 the TTS-Suite, is described in [release-api.md](release-api.md).
 
 GPU-Orc is a small service per machine. It frees GPUs on request and tells who holds what right now.
@@ -53,8 +53,24 @@ Errors always come as `{"error": "<text>"}`. An unknown path gives `404`.
 ### `GET /health`
 
 ```json
-{"status": "ok", "version": "0.3.0", "free_timeout_s": 180.0, "caller_timeout_s": 210.0}
+{"status": "ok", "version": "0.6.0", "free_timeout_s": 180.0, "caller_timeout_s": 210.0}
 ```
+
+### `GET /loading` — the traffic light
+
+```json
+{"loading": ["DeepSeek-V4-Flash-284B-A13B-MXFP4-FP8-DSpark-vllm"]}
+```
+
+Which big models are loading right now; empty = green. While a model loads, its cards look emptier than
+they are about to be. Whoever wants to put something on a card (STT-Suite, TTS-Suite, AIfred's image
+describer) asks here first and starts nothing on the GPU while there is an entry. The answer comes at once,
+without nvidia-smi and without asking the consumers.
+
+A model counts as loading from the moment a `/free` in the `model` form clears for it, before the model
+server knows of it, and for `load_grace_s` (config, default 15 s) after that `/free` ended; from then on the
+model server says so itself (`starting`). Its persistent helpers do not count, they load into their own
+room, not even when something is cleared for them. If the model server does not answer: `502`. That is no green light.
 
 ### `GET /status` — who holds what
 

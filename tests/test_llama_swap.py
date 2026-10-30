@@ -53,6 +53,13 @@ def test_running_model_missing_from_config_is_an_error(config_file: Path) -> Non
         LlamaSwap("ls", fake.url, config_file).holders(GPUS)
 
 
+def test_loading_names_big_models_only(config_file: Path) -> None:
+    entries = [{"model": "main-a", "state": "starting"}, {"model": "describer", "state": "starting"},
+               {"model": "embedder", "state": "ready"}, {"model": "main-all", "state": "stopping"}]
+    with FakeService({("GET", "/running"): answers((200, {"running": entries}))}).running() as service:
+        assert LlamaSwap("ls", service.url, config_file).loading() == ["main-a"]
+
+
 def test_model_cards(config_file: Path) -> None:
     server = LlamaSwap("ls", "http://unused", config_file)
     assert server.model_gpu_uuids("main-vlm-b", GPUS) == {"GPU-bbbb1111"}

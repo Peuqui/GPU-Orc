@@ -13,6 +13,7 @@ import yaml
 from .consumers.gpu_release import GpuRelease
 from .consumers.llama_swap import LlamaSwap
 from .model import Consumer
+from .orchestrator import DEFAULT_LOAD_GRACE_S
 from .verify import DEFAULT_VERIFY, VerifySettings
 
 DEFAULT_PORT = 5070
@@ -29,6 +30,7 @@ class Config:
     port: int
     token: str | None
     free_timeout_s: float
+    load_grace_s: float
     verify: VerifySettings
     consumers: tuple[Consumer, ...]
 
@@ -46,6 +48,7 @@ def load_config(path: Path) -> Config:
     if token is None and not _is_loopback(host):
         raise ConfigError(f"listen.host {host!r} is not loopback: token_file is required")
     free_timeout_s = float(_get(data, "free_timeout_s", (int, float), "config", DEFAULT_FREE_TIMEOUT_S))
+    load_grace_s = float(_get(data, "load_grace_s", (int, float), "config", DEFAULT_LOAD_GRACE_S))
     defaults = DEFAULT_VERIFY
     verify = VerifySettings(
         timeout_s=float(_get(data, "verify_timeout_s", (int, float), "config", defaults.timeout_s)),
@@ -58,7 +61,7 @@ def load_config(path: Path) -> Config:
     names = [consumer.name for consumer in consumers]
     if len(set(names)) != len(names):
         raise ConfigError(f"consumers: names must be unique, got {names}")
-    return Config(host, port, token, free_timeout_s, verify, consumers)
+    return Config(host, port, token, free_timeout_s, load_grace_s, verify, consumers)
 
 
 def _consumer(entry: Mapping[str, Any]) -> Consumer:

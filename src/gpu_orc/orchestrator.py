@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
@@ -15,6 +16,8 @@ from .verify import DEFAULT_VERIFY, StillHeld, VerifySettings, verify
 
 # How much longer than the overall limit a caller's HTTP timeout should be (answer, nvidia-smi).
 CALLER_MARGIN_S = 30.0
+# How long a model that was cleared for counts as loading after /free ended, until its server says so.
+DEFAULT_LOAD_GRACE_S = 15.0
 
 
 class RequestError(ValueError):
@@ -52,8 +55,12 @@ class Orchestrator:
         free_timeout_s: float,
         query: Callable[[], list[Gpu]] = query_gpus,
         verify_settings: VerifySettings = DEFAULT_VERIFY,
+        load_grace_s: float = DEFAULT_LOAD_GRACE_S,
     ) -> None:
         self._consumers = {consumer.name: consumer for consumer in consumers}
+        self._load_grace_s = load_grace_s
+        self._announced: dict[str, float] = {}  # model -> time.monotonic() until it counts as loading
+        self._announced_lock = threading.Lock()
         self._free_timeout_s = free_timeout_s
         self._query = query
         self._verify = verify_settings
@@ -75,6 +82,26 @@ class Orchestrator:
             **self._status_body(gpus, self._collect(gpus), [gpu.uuid for gpu in gpus]),
         }
 
+    def loading(self) -> dict[str, list[str]]:
+        """The traffic light: which big models are loading. While one does, the cards look emptier than
+        they are, so nothing else should start on them. A model counts from the /free that clears for
+        it, before its server knows of it. Raises ModelServerUnreachable."""
+        now = time.monotonic()
+        with self._announced_lock:
+            models = {model for model, until in self._announced.items() if until > now}
+        for server in self._consumers.values():
+            if isinstance(server, ModelServer):
+                try:
+                    models.update(server.loading())
+                except ConsumerError as error:
+                    raise ModelServerUnreachable(str(error)) from error
+        return {"loading": sorted(models)}
+
+    def _announce(self, model: str, until: float) -> None:
+        with self._announced_lock:
+            self._announced = {m: u for m, u in self._announced.items() if u > time.monotonic()}
+            self._announced[model] = until
+
     def free(self, request: FreeRequest) -> dict[str, Any]:
         started = time.monotonic()
         deadline = started + self._free_timeout_s
@@ -84,6 +111,19 @@ class Orchestrator:
         self._check_keep(request.keep)
         if server is not None and self._running(server, request.model):
             return self._already_running(gpus, targets, started)
+        # A helper loads into its own room: the traffic light stays green for it.
+        if server is None or request.model is None or request.dry_run or server.is_helper(request.model):
+            return self._free(request, server, targets, gpus, started, deadline)
+        self._announce(request.model, deadline)
+        try:
+            return self._free(request, server, targets, gpus, started, deadline)
+        finally:
+            self._announce(request.model, time.monotonic() + self._load_grace_s)
+
+    def _free(
+        self, request: FreeRequest, server: ModelServer | None, targets: frozenset[str], gpus: Sequence[Gpu],
+        started: float, deadline: float,
+    ) -> dict[str, Any]:
         with self._gate.enter(deadline) as entered:
             # A request ahead in the queue may have loaded the model meanwhile.
             if entered and server is not None and self._running(server, request.model):

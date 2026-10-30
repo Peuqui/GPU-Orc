@@ -1,4 +1,4 @@
-"""HTTP interface: GET /health, GET /status, POST /free (standard library server, one thread per request)."""
+"""HTTP interface: GET /health, GET /status, GET /loading, POST /free (standard library server, one thread per request)."""
 
 from __future__ import annotations
 
@@ -42,6 +42,8 @@ class Handler(BaseHTTPRequestHandler):
             })
         elif self.path == "/status":
             self._answer(orchestrator.status)
+        elif self.path == "/loading":
+            self._answer(orchestrator.loading)
         else:
             self._send(HTTPStatus.NOT_FOUND, {"error": f"no such path: {self.path}"})
 

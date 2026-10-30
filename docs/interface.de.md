@@ -2,7 +2,7 @@
 
 [English](interface.md)
 
-Stand: Version 0.3.0. Die gemeinsame Freigabe-Schnittstelle der Suiten, über die GPU-Orc STT-Suite
+Stand: Version 0.6.0. Die gemeinsame Freigabe-Schnittstelle der Suiten, über die GPU-Orc STT-Suite
 und TTS-Suite anspricht, steht in [release-api.de.md](release-api.de.md).
 
 GPU-Orc ist ein kleiner Dienst je Rechner. Er räumt auf Anfrage Grafikkarten frei und sagt, wer gerade
@@ -55,8 +55,24 @@ Fehler kommen immer als `{"error": "<text>"}`. Ein unbekannter Pfad ergibt `404`
 ### `GET /health`
 
 ```json
-{"status": "ok", "version": "0.3.0", "free_timeout_s": 180.0, "caller_timeout_s": 210.0}
+{"status": "ok", "version": "0.6.0", "free_timeout_s": 180.0, "caller_timeout_s": 210.0}
 ```
+
+### `GET /loading` — die Ampel
+
+```json
+{"loading": ["DeepSeek-V4-Flash-284B-A13B-MXFP4-FP8-DSpark-vllm"]}
+```
+
+Welche großen Modelle gerade laden; leer = grün. Während ein Modell lädt, sehen seine Karten leerer aus,
+als sie gleich sind. Wer etwas auf eine Karte legen will (STT-Suite, TTS-Suite, AIfreds Bildbeschreiber),
+fragt hier vorher und startet bei einem Eintrag nichts auf der GPU. Die Antwort kommt sofort, ohne
+nvidia-smi und ohne die Verbraucher zu fragen.
+
+Ein Modell zählt als ladend, sobald ein `/free` in der Form `model` dafür räumt, also bevor der
+Modellserver davon weiß, und noch `load_grace_s` (Config, Standard 15 s) nach dem Ende dieses `/free`;
+danach sagt es der Modellserver selbst (`starting`). Seine persistenten Hilfsmodelle zählen nicht, die
+laden auf ihren eigenen Platz, auch nicht, wenn für sie geräumt wird. Antwortet der Modellserver nicht: `502`. Das ist keine grüne Ampel.
 
 ### `GET /status` — wer hält was
 

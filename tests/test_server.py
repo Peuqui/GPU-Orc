@@ -45,6 +45,10 @@ def test_status(url: str) -> None:
     assert status == 200 and len(body["gpus"]) == 3 and body["errors"] == []
 
 
+def test_loading(url: str) -> None:
+    assert call(f"{url}/loading") == (200, {"loading": []})
+
+
 def test_free_model_already_running(url: str) -> None:
     status, body = call(f"{url}/free", "POST", {"model": "big", "reason": "hook"})
     assert status == 200 and body["already_running"] is True
