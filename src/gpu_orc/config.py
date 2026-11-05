@@ -12,6 +12,8 @@ import yaml
 
 from .consumers.gpu_release import GpuRelease
 from .consumers.llama_swap import LlamaSwap
+from .consumers.tts_suite_remote import TtsSuiteRemote
+from .hold import DEFAULT_HOLD_FILE
 from .model import Consumer
 from .orchestrator import DEFAULT_LOAD_GRACE_S
 from .verify import DEFAULT_VERIFY, VerifySettings
@@ -33,6 +35,7 @@ class Config:
     load_grace_s: float
     verify: VerifySettings
     consumers: tuple[Consumer, ...]
+    hold_file: Path
 
 
 def load_config(path: Path) -> Config:
@@ -61,7 +64,8 @@ def load_config(path: Path) -> Config:
     names = [consumer.name for consumer in consumers]
     if len(set(names)) != len(names):
         raise ConfigError(f"consumers: names must be unique, got {names}")
-    return Config(host, port, token, free_timeout_s, load_grace_s, verify, consumers)
+    hold_file = Path(_get(data, "hold_file", str, "config", str(DEFAULT_HOLD_FILE))).expanduser()
+    return Config(host, port, token, free_timeout_s, load_grace_s, verify, consumers, hold_file)
 
 
 def _consumer(entry: Mapping[str, Any]) -> Consumer:
@@ -98,13 +102,28 @@ def _llama_swap(name: str, entry: Mapping[str, Any]) -> Consumer:
     )
 
 
+def _tts_suite_remote(name: str, entry: Mapping[str, Any]) -> Consumer:
+    token = _read_token(_get(entry, "token_file", str, name))
+    if token is None:
+        raise ConfigError(f"{name}: token_file is required")
+    return TtsSuiteRemote(
+        name=name,
+        url=_url(entry, name),
+        host=_get(entry, "host", str, name),
+        token=token,
+        busy_wait_s=float(_get(entry, "busy_wait_s", (int, float), name, 0)),
+    )
+
+
 _BUILDERS: dict[str, Callable[[str, Mapping[str, Any]], Consumer]] = {
     "gpu-release": _gpu_release,
     "llama-swap": _llama_swap,
+    "tts-suite-remote": _tts_suite_remote,
 }
 _FIELDS: dict[str, tuple[str, ...]] = {
     "gpu-release": ("url", "busy_wait_s", "force_after_wait"),
     "llama-swap": ("url", "config_file", "no_eviction_models"),
+    "tts-suite-remote": ("url", "host", "token_file", "busy_wait_s"),
 }
 
 _MISSING = object()

@@ -11,6 +11,7 @@ from typing import Any, Literal
 
 from .gate import FifoGate
 from .gpus import Gpu, GpuSpecError, query_gpus, resolve_gpu
+from .hold import HoldStore
 from .model import Action, Consumer, ConsumerError, Holder, ModelServer, UnknownModel
 from .verify import DEFAULT_VERIFY, StillHeld, VerifySettings, verify
 
@@ -56,8 +57,11 @@ class Orchestrator:
         query: Callable[[], list[Gpu]] = query_gpus,
         verify_settings: VerifySettings = DEFAULT_VERIFY,
         load_grace_s: float = DEFAULT_LOAD_GRACE_S,
+        *,
+        hold: HoldStore,
     ) -> None:
         self._consumers = {consumer.name: consumer for consumer in consumers}
+        self._hold = hold
         self._load_grace_s = load_grace_s
         self._announced: dict[str, float] = {}  # model -> time.monotonic() until it counts as loading
         self._announced_lock = threading.Lock()
@@ -79,13 +83,31 @@ class Orchestrator:
         state = self._gate.state()
         return {
             "queue": {"running": state.running, "waiting": state.waiting, "running_since_s": state.running_since_s},
+            "held": self._held_json(),
             **self._status_body(gpus, self._collect(gpus), [gpu.uuid for gpu in gpus]),
         }
 
-    def loading(self) -> dict[str, list[str]]:
-        """The traffic light: which big models are loading. While one does, the cards look emptier than
-        they are, so nothing else should start on them. A model counts from the /free that clears for
-        it, before its server knows of it. Raises ModelServerUnreachable."""
+    def hold(self, reason: str) -> dict[str, Any]:
+        """Hold the cards for somebody (hold.py) and clear every card at once; the answer carries the
+        hold and the /free of all cards."""
+        hold = self._hold.set(reason)
+        freed = self.free(FreeRequest(reason=f"hold: {reason}", gpus="all"))
+        return {"held": hold.as_json(), "free": freed}
+
+    def release_hold(self) -> dict[str, Any]:
+        """Let go of the cards: new things may go on them again."""
+        self._hold.clear()
+        return {"held": None}
+
+    def _held_json(self) -> dict[str, str] | None:
+        hold = self._hold.get()
+        return hold.as_json() if hold else None
+
+    def loading(self) -> dict[str, Any]:
+        """The traffic light: which big models are loading, and whether the cards are held. While a model
+        loads, the cards look emptier than they are; while they are held, somebody keeps them. Either way
+        nothing new should start on them. A model counts from the /free that clears for it, before its
+        server knows of it. Raises ModelServerUnreachable."""
         now = time.monotonic()
         with self._announced_lock:
             models = {model for model, until in self._announced.items() if until > now}
@@ -95,7 +117,7 @@ class Orchestrator:
                     models.update(server.loading())
                 except ConsumerError as error:
                     raise ModelServerUnreachable(str(error)) from error
-        return {"loading": sorted(models)}
+        return {"loading": sorted(models), "held": self._held_json()}
 
     def _announce(self, model: str, until: float) -> None:
         with self._announced_lock:

@@ -23,6 +23,14 @@ Karten freiräumt, statt dass jeder Aufrufer eine eigene Kopie dieser Logik mitb
   - `llama-swap`: ein Modellserver. GPU-Orc liest aus dessen eigener Config, welche Karten ein Modell
     belegt (`CUDA_VISIBLE_DEVICES` im `env` des Modells) und welche Modelle dauerhaft geladen bleiben
     (Gruppen mit `persistent: true`).
+  - `tts-suite-remote`: die TTS-Container, die die TTS-Suite eines anderen Rechners auf diesem betreibt
+    (ihre `hosts`). Die Suite meldet sie (`GET /engines`) und stoppt sie (`POST /release`). GPU-Orc
+    schickt das Token der Suite mit, wartet bis zu `busy_wait_s` auf eine Vorlesung, die einen Container
+    hält, und zählt einen laufenden Container auf alle Karten (die Suite sagt nicht, auf welcher er liegt).
+- **Karten freihalten:** `POST /hold` hält die Karten dieses Rechners für jemanden frei (ein Spiel,
+  andere Arbeit) und räumt sofort alle Karten. Bis `DELETE /hold` melden `GET /loading` und `GET /status`
+  den Halt, und Aufrufer, die etwas starten würden, legen nichts Neues auf die Karten. Der Halt liegt in
+  `hold_file` und übersteht einen Neustart; was ein Aufrufer lädt, ohne zu fragen, beendet GPU-Orc nicht.
 - **Nachgeprüft, nicht geglaubt:** Nach einer Freigabe fragt GPU-Orc den Dienst erneut und misst den
   Speicher der Karten mit nvidia-smi nach, bis `verify_timeout_s`. Ein Element, das noch gemeldet
   wird, oder Speicher, der nicht sinkt, ergibt `not_freed`.
@@ -38,9 +46,11 @@ Karten freiräumt, statt dass jeder Aufrufer eine eigene Kopie dieser Logik mitb
 | Endpunkt | Zweck |
 |---|---|
 | `GET /health` | Version, `free_timeout_s` und das HTTP-Timeout, das Aufrufer nehmen sollen |
-| `GET /loading` | welche großen Modelle gerade laden, für alle, die etwas auf einer Karte starten wollen |
+| `GET /loading` | welche großen Modelle gerade laden und ob die Karten freigehalten werden, für alle, die etwas auf einer Karte starten wollen |
 | `GET /status` | je Karte: Speicher, Halter, nicht zugeordneter Speicher; die Schlange; Verbraucher, die nichts melden konnten |
 | `POST /free` | Karten freiräumen: `{"gpus": [0, "GPU-…"] \| "all", ...}` oder `{"model": "<name>", ...}` |
+| `POST /hold` | Karten für jemanden freihalten und alle räumen: `{"reason": "..."}` |
+| `DELETE /hold` | Karten wieder freigeben |
 
 `POST /free` nimmt genau eine von zwei Formen, dazu `reason` (Pflicht), `keep` und `dry_run`:
 

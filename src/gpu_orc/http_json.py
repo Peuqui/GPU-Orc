@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import urllib.error
 import urllib.request
+from collections.abc import Mapping
 from typing import Any
 
 from .model import ConsumerError
@@ -12,11 +13,15 @@ from .model import ConsumerError
 REQUEST_TIMEOUT_S = 10.0
 
 
-def request_json(method: str, url: str, body: Any = None, timeout: float = REQUEST_TIMEOUT_S) -> tuple[int, Any]:
+def request_json(
+    method: str, url: str, body: Any = None, timeout: float = REQUEST_TIMEOUT_S,
+    headers: Mapping[str, str] | None = None,
+) -> tuple[int, Any]:
     """Status and decoded JSON body (None when empty). HTTP error statuses are returned, not raised:
     the protocols give some of them a meaning (409 = busy). Raises ConsumerError when the service is
-    unreachable or answers something that is not JSON."""
-    status, raw = _exchange(method, url, body, timeout)
+    unreachable or answers something that is not JSON. ``headers``: e.g. the token of a service on
+    another machine."""
+    status, raw = _exchange(method, url, body, timeout, headers or {})
     if not raw.strip():
         return status, None
     try:
@@ -28,13 +33,13 @@ def request_json(method: str, url: str, body: Any = None, timeout: float = REQUE
 def request_status(method: str, url: str, timeout: float = REQUEST_TIMEOUT_S) -> int:
     """Only the status, for endpoints whose answer body carries no meaning (llama-swap's unload
     answers the text "OK"). Raises ConsumerError when the service is unreachable."""
-    status, _ = _exchange(method, url, None, timeout)
+    status, _ = _exchange(method, url, None, timeout, {})
     return status
 
 
-def _exchange(method: str, url: str, body: Any, timeout: float) -> tuple[int, bytes]:
+def _exchange(method: str, url: str, body: Any, timeout: float, headers: Mapping[str, str]) -> tuple[int, bytes]:
     data = None if body is None else json.dumps(body).encode()
-    request = urllib.request.Request(url, data=data, method=method)
+    request = urllib.request.Request(url, data=data, method=method, headers=dict(headers))
     if data is not None:
         request.add_header("Content-Type", "application/json")
     try:

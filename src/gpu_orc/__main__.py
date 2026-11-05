@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 from .config import ConfigError, load_config
+from .hold import HoldFileError, HoldStore
 from .orchestrator import Orchestrator
 from .server import GpuOrcServer
 
@@ -21,11 +22,13 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         config = load_config(args.config.expanduser())
-    except ConfigError as error:
+        hold = HoldStore(config.hold_file)
+    except (ConfigError, HoldFileError) as error:
         print(f"gpu-orc: {error}", file=sys.stderr)
         return 2
     orchestrator = Orchestrator(
         config.consumers, config.free_timeout_s, verify_settings=config.verify, load_grace_s=config.load_grace_s,
+        hold=hold,
     )
     server = GpuOrcServer((config.host, config.port), orchestrator, config.token)
     names = ", ".join(consumer.name for consumer in config.consumers)

@@ -55,16 +55,17 @@ Fehler kommen immer als `{"error": "<text>"}`. Ein unbekannter Pfad ergibt `404`
 ### `GET /health`
 
 ```json
-{"status": "ok", "version": "0.6.0", "free_timeout_s": 180.0, "caller_timeout_s": 210.0}
+{"status": "ok", "version": "0.7.0", "free_timeout_s": 180.0, "caller_timeout_s": 210.0}
 ```
 
 ### `GET /loading` — die Ampel
 
 ```json
-{"loading": ["DeepSeek-V4-Flash-284B-A13B-MXFP4-FP8-DSpark-vllm"]}
+{"loading": ["DeepSeek-V4-Flash-284B-A13B-MXFP4-FP8-DSpark-vllm"], "held": null}
 ```
 
-Welche großen Modelle gerade laden; leer = grün. Während ein Modell lädt, sehen seine Karten leerer aus,
+Welche großen Modelle gerade laden und ob die Karten freigehalten werden (`held`, siehe `POST /hold`);
+leer und `null` = grün. Während ein Modell lädt, sehen seine Karten leerer aus,
 als sie gleich sind. Wer etwas auf eine Karte legen will (STT-Suite, TTS-Suite, AIfreds Bildbeschreiber),
 fragt hier vorher und startet bei einem Eintrag nichts auf der GPU. Die Antwort kommt sofort, ohne
 nvidia-smi und ohne die Verbraucher zu fragen.
@@ -74,11 +75,33 @@ Modellserver davon weiß, und noch `load_grace_s` (Config, Standard 15 s) nach d
 danach sagt es der Modellserver selbst (`starting`). Seine persistenten Hilfsmodelle zählen nicht, die
 laden auf ihren eigenen Platz, auch nicht, wenn für sie geräumt wird. Antwortet der Modellserver nicht: `502`. Das ist keine grüne Ampel.
 
+### `POST /hold`, `DELETE /hold` — Karten für jemanden freihalten
+
+```json
+{"reason": "Spielen"}
+```
+
+Jemand hält die Karten dieses Rechners für sich frei (ein Spiel, andere Arbeit). GPU-Orc legt den Halt in
+`hold_file` ab (Config, Standard `~/.local/state/gpu-orc/hold.json`; er übersteht einen Neustart von GPU-Orc
+und des Rechners) und räumt danach alle Karten wie `POST /free` mit `"gpus": "all"`. Die Antwort enthält
+beides:
+
+```json
+{"held": {"since": "2026-11-05T09:12:00+01:00", "reason": "Spielen"}, "free": {"...": "wie POST /free"}}
+```
+
+Bis `DELETE /hold` (Antwort `{"held": null}`) nennen `GET /loading` und `GET /status` den Halt, und wer
+etwas Neues auf eine Karte legen würde (ein Bildbeschreiber eines anderen Rechners, ein TTS-Container, der
+von dort gestartet wird), lässt sie in Ruhe. Was ein Aufrufer lädt, ohne zu fragen, beendet GPU-Orc nicht.
+Ein zweiter Halt behält die Zeit des ersten und übernimmt den neuen Grund. Ein Body ohne nicht-leeren
+`reason`: `400`.
+
 ### `GET /status` — wer hält was
 
 ```json
 {
   "queue": {"running": true, "waiting": 1, "running_since_s": 42.0},
+  "held": null,
   "gpus": [
     {
       "index": 0,

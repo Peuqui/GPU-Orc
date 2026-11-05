@@ -26,6 +26,7 @@ class FakeService:
     def __init__(self, routes: dict[tuple[str, str], Route]) -> None:
         self.routes = routes
         self.calls: list[tuple[str, str, Any]] = []
+        self.headers: list[dict[str, str]] = []  # the request headers of each call, names in lower case
         fake = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -33,6 +34,7 @@ class FakeService:
                 length = int(self.headers.get("Content-Length") or 0)
                 body = json.loads(self.rfile.read(length)) if length else None
                 fake.calls.append((method, self.path, body))
+                fake.headers.append({name.lower(): value for name, value in self.headers.items()})
                 route = fake.routes.get((method, self.path))
                 status, answer = (404, {"error": "no route"}) if route is None else route(body)
                 # bytes go out as they are: some services answer plain text (llama-swap's unload: "OK").

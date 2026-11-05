@@ -21,6 +21,14 @@ cards, instead of every caller carrying its own copy of that logic.
   - `llama-swap`: a model server. GPU-Orc reads which cards each model uses (`CUDA_VISIBLE_DEVICES`
     in the model's `env`) and which models are persistent (groups with `persistent: true`) from
     llama-swap's own config.
+  - `tts-suite-remote`: the TTS containers that the TTS-Suite of another machine runs on this one
+    (its `hosts`). That suite reports them (`GET /engines`) and stops them (`POST /release`); GPU-Orc
+    sends the suite's token, waits up to `busy_wait_s` for a reading that holds a container, and counts
+    a running container as holding every card (the suite does not say which).
+- **Holding the cards:** `POST /hold` keeps this machine's cards for somebody (a game, other work) and
+  clears every card at once. Until `DELETE /hold`, `GET /loading` and `GET /status` say so, and callers
+  that would start something put nothing new on the cards. The hold lives in `hold_file` and outlasts a
+  restart; GPU-Orc ends nothing a caller loads without asking.
 - **Checked, not believed:** after a release GPU-Orc asks the service again and measures the card
   memory with nvidia-smi, until `verify_timeout_s`. An item still reported, or memory that did not
   go down, is `not_freed`.
@@ -36,9 +44,11 @@ cards, instead of every caller carrying its own copy of that logic.
 | Endpoint | Purpose |
 |---|---|
 | `GET /health` | version, `free_timeout_s` and the HTTP timeout callers should use |
-| `GET /loading` | which big models are loading right now, for those who want to start something on a card |
+| `GET /loading` | which big models are loading right now and whether the cards are held, for those who want to start something on a card |
 | `GET /status` | per GPU: memory, holders, unattributed memory; the queue; consumers that could not report |
 | `POST /free` | free GPUs: `{"gpus": [0, "GPU-…"] \| "all", ...}` or `{"model": "<name>", ...}` |
+| `POST /hold` | hold the cards for somebody and clear them all: `{"reason": "..."}` |
+| `DELETE /hold` | let go of the cards |
 
 `POST /free` takes exactly one of two forms, plus `reason` (required), `keep` and `dry_run`:
 

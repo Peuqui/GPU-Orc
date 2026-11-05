@@ -1,4 +1,5 @@
-"""HTTP interface: GET /health, GET /status, GET /loading, POST /free (standard library server, one thread per request)."""
+"""HTTP interface: GET /health, GET /status, GET /loading, POST /free, POST and DELETE /hold (standard library
+server, one thread per request)."""
 
 from __future__ import annotations
 
@@ -50,15 +51,28 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         if not self._authorized():
             return
-        if self.path != "/free":
+        if self.path == "/free":
+            parse: Any = parse_free_request
+            act: Any = self.server.orchestrator.free
+        elif self.path == "/hold":
+            parse, act = parse_hold_request, self.server.orchestrator.hold
+        else:
             self._send(HTTPStatus.NOT_FOUND, {"error": f"no such path: {self.path}"})
             return
         try:
-            request = parse_free_request(self._json_body())
+            request = parse(self._json_body())
         except RequestError as error:
             self._send(HTTPStatus.BAD_REQUEST, {"error": str(error)})
             return
-        self._answer(lambda: self.server.orchestrator.free(request))
+        self._answer(lambda: act(request))
+
+    def do_DELETE(self) -> None:
+        if not self._authorized():
+            return
+        if self.path != "/hold":
+            self._send(HTTPStatus.NOT_FOUND, {"error": f"no such path: {self.path}"})
+            return
+        self._answer(self.server.orchestrator.release_hold)
 
     def _answer(self, produce: Any) -> None:
         try:
@@ -111,6 +125,14 @@ def authorization_error(client_ip: str, header: str, token: str | None) -> tuple
     if token is None or not hmac.compare_digest(header.removeprefix("Bearer ").encode(), token.encode()):
         return HTTPStatus.FORBIDDEN, "wrong token"
     return None
+
+
+def parse_hold_request(body: Any) -> str:
+    """The reason of a ``POST /hold`` (``{"reason": "..."}``): who holds the cards, and why."""
+    if not isinstance(body, dict) or set(body) != {"reason"} or not isinstance(body["reason"], str) \
+            or not body["reason"].strip():
+        raise RequestError('body: {"reason": "<who holds the cards, and why>"}')
+    return body["reason"].strip()
 
 
 def parse_free_request(body: Any) -> FreeRequest:

@@ -21,6 +21,9 @@ free_timeout_s: 180
 # verify_timeout_s: 30
 # min_freed_mib: 256
 
+# Where the hold of the cards is kept (POST /hold, DELETE /hold); it outlasts a restart.
+# hold_file: ~/.local/state/gpu-orc/hold.json
+
 consumers:
   # Services with the suites' common release API (GET /gpu/holders, POST /gpu/release).
   - name: stt-suite
@@ -41,3 +44,12 @@ consumers:
     config_file: ~/.config/llama-swap/config.yaml
     # Models that keep room for the persistent ones by calibration and evict nothing.
     no_eviction_models: ["*-vlm-*"]
+
+  # On a machine whose TTS containers another machine's TTS-Suite starts (its "hosts"): that suite reports
+  # and stops them. It listens beyond loopback there, so every request needs its token.
+  # - name: tts-remote
+  #   type: tts-suite-remote
+  #   url: http://192.168.1.10:5090
+  #   host: Workstation           # this machine's name in that suite's hosts
+  #   token_file: ~/.config/gpu-orc/tts-suite.token
+  #   busy_wait_s: 30             # wait this long for a reading that holds a container

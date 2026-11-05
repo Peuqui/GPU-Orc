@@ -53,16 +53,17 @@ Errors always come as `{"error": "<text>"}`. An unknown path gives `404`.
 ### `GET /health`
 
 ```json
-{"status": "ok", "version": "0.6.0", "free_timeout_s": 180.0, "caller_timeout_s": 210.0}
+{"status": "ok", "version": "0.7.0", "free_timeout_s": 180.0, "caller_timeout_s": 210.0}
 ```
 
 ### `GET /loading` — the traffic light
 
 ```json
-{"loading": ["DeepSeek-V4-Flash-284B-A13B-MXFP4-FP8-DSpark-vllm"]}
+{"loading": ["DeepSeek-V4-Flash-284B-A13B-MXFP4-FP8-DSpark-vllm"], "held": null}
 ```
 
-Which big models are loading right now; empty = green. While a model loads, its cards look emptier than
+Which big models are loading right now, and whether the cards are held (`held`, see `POST /hold`);
+empty and `null` = green. While a model loads, its cards look emptier than
 they are about to be. Whoever wants to put something on a card (STT-Suite, TTS-Suite, AIfred's image
 describer) asks here first and starts nothing on the GPU while there is an entry. The answer comes at once,
 without nvidia-smi and without asking the consumers.
@@ -72,11 +73,31 @@ server knows of it, and for `load_grace_s` (config, default 15 s) after that `/f
 model server says so itself (`starting`). Its persistent helpers do not count, they load into their own
 room, not even when something is cleared for them. If the model server does not answer: `502`. That is no green light.
 
+### `POST /hold`, `DELETE /hold` — keeping the cards for somebody
+
+```json
+{"reason": "gaming"}
+```
+
+Somebody keeps this machine's cards (a game, other work). GPU-Orc stores the hold in `hold_file` (config,
+default `~/.local/state/gpu-orc/hold.json`; it outlasts a restart of GPU-Orc and of the machine) and then
+clears every card like `POST /free` with `"gpus": "all"`. The answer carries both:
+
+```json
+{"held": {"since": "2026-11-05T09:12:00+01:00", "reason": "gaming"}, "free": {"...": "as POST /free"}}
+```
+
+Until `DELETE /hold` (answer `{"held": null}`), `GET /loading` and `GET /status` name the hold, and whoever
+would put something new on a card (a describer of another machine, a TTS container started from there)
+leaves it alone. GPU-Orc ends nothing a caller loads without asking. Holding again keeps the time of the
+first hold and takes the new reason. A body without a non-empty `reason`: `400`.
+
 ### `GET /status` — who holds what
 
 ```json
 {
   "queue": {"running": true, "waiting": 1, "running_since_s": 42.0},
+  "held": null,
   "gpus": [
     {
       "index": 0,

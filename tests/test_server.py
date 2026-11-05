@@ -4,20 +4,23 @@ import urllib.error
 import urllib.request
 from collections.abc import Iterator
 from http import HTTPStatus
+from pathlib import Path
 from typing import Any
 
 import pytest
 from fakes import GPUS
 from test_orchestrator import FakeService, model, server
 
+from gpu_orc.hold import HoldStore
 from gpu_orc.orchestrator import Orchestrator, RequestError
 from gpu_orc.server import GpuOrcServer, authorization_error, parse_free_request
 
 
 @pytest.fixture
-def url() -> Iterator[str]:
+def url(tmp_path: Path) -> Iterator[str]:
     consumers = [FakeService("stt"), server(model("big", GPUS[0].uuid))]
-    httpd = GpuOrcServer(("127.0.0.1", 0), Orchestrator(consumers, 660, query=lambda: list(GPUS)), token=None)
+    orchestrator = Orchestrator(consumers, 660, query=lambda: list(GPUS), hold=HoldStore(tmp_path / "hold.json"))
+    httpd = GpuOrcServer(("127.0.0.1", 0), orchestrator, token=None)
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
     yield f"http://127.0.0.1:{httpd.server_address[1]}"
@@ -46,7 +49,7 @@ def test_status(url: str) -> None:
 
 
 def test_loading(url: str) -> None:
-    assert call(f"{url}/loading") == (200, {"loading": []})
+    assert call(f"{url}/loading") == (200, {"loading": [], "held": None})
 
 
 def test_free_model_already_running(url: str) -> None:
@@ -91,3 +94,31 @@ def test_authorization() -> None:
     assert authorization_error("203.0.113.7", "Bearer wrong", "t") == (HTTPStatus.FORBIDDEN, "wrong token")
     assert authorization_error("203.0.113.7", "Bearer t", "t") is None
     assert authorization_error("203.0.113.7", "Bearer t", None) == (HTTPStatus.FORBIDDEN, "wrong token")
+
+
+@pytest.fixture
+def quiet_url(tmp_path: Path) -> Iterator[str]:
+    """A machine where nothing is held: a hold has nothing to clear and answers at once."""
+    orchestrator = Orchestrator([FakeService("stt"), server()], 660, query=lambda: list(GPUS),
+                                hold=HoldStore(tmp_path / "hold.json"))
+    httpd = GpuOrcServer(("127.0.0.1", 0), orchestrator, token=None)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    yield f"http://127.0.0.1:{httpd.server_address[1]}"
+    httpd.shutdown()
+    httpd.server_close()
+
+
+def test_hold_and_let_go(quiet_url: str) -> None:
+    url = quiet_url
+    status, body = call(f"{url}/hold", "POST", {"reason": "gaming"})
+    assert status == 200 and body["held"]["reason"] == "gaming" and "free" in body
+    assert call(f"{url}/loading")[1]["held"]["reason"] == "gaming"
+    assert call(f"{url}/hold", "DELETE") == (200, {"held": None})
+    assert call(f"{url}/loading") == (200, {"loading": [], "held": None})
+
+
+@pytest.mark.parametrize("body", [None, {}, {"reason": ""}, {"reason": 3}, {"reason": "x", "until": 5}])
+def test_a_hold_needs_a_reason(url: str, body: Any) -> None:
+    status, answer = call(f"{url}/hold", "POST", body)
+    assert status == 400 and "reason" in answer["error"]
