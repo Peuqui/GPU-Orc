@@ -16,7 +16,7 @@ Karten freiräumt, statt dass jeder Aufrufer eine eigene Kopie dieser Logik mitb
 - **Verbraucher** sind die Dienste, die Karten belegen. Jeder hat einen Typ, eine Implementierung je
   Protokoll:
   - `gpu-release`: ein Dienst mit der gemeinsamen Freigabe-Schnittstelle von STT-Suite und TTS-Suite
-    (`GET /gpu/holders`, `POST /gpu/release`). Solange ein Element arbeitet (Transkription, Vorlesung),
+    (`GET /gpu/holders`, `POST /gpu/release`, auch AIfreds Gesichtserkennung; mit `token_file` als Bearer-Token). Solange ein Element arbeitet (Transkription, Vorlesung),
     antwortet der Dienst „beschäftigt“. GPU-Orc wartet bis zu `busy_wait_s` und lässt den Dienst
     danach erzwingen, wenn `force_after_wait` gesetzt ist. Der Dienst beendet Prozess oder Container
     selbst und meldet `released` erst, wenn er weg ist.

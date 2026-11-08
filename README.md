@@ -14,7 +14,7 @@ cards, instead of every caller carrying its own copy of that logic.
 
 - **Consumers** are the services that hold GPUs. Each has a type, one implementation per protocol:
   - `gpu-release`: a service with the common release API of the STT-Suite and the TTS-Suite
-    (`GET /gpu/holders`, `POST /gpu/release`). While an item is busy (a transcription, a reading) the
+    (`GET /gpu/holders`, `POST /gpu/release`, also AIfred's face detection; with `token_file` as a bearer token). While an item is busy (a transcription, a reading) the
     service answers "busy"; GPU-Orc waits up to `busy_wait_s`, then has the service force it if
     `force_after_wait` is set. The service ends the process or container itself and says `released`
     only once it is gone.

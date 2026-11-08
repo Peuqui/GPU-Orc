@@ -87,6 +87,7 @@ def _gpu_release(name: str, entry: Mapping[str, Any]) -> Consumer:
         url=_url(entry, name),
         busy_wait_s=float(_get(entry, "busy_wait_s", (int, float), name, 0)),
         force_after_wait=_get(entry, "force_after_wait", bool, name, False),
+        token=_read_token(_get(entry, "token_file", str, name, None)),
     )
 
 
@@ -121,7 +122,7 @@ _BUILDERS: dict[str, Callable[[str, Mapping[str, Any]], Consumer]] = {
     "tts-suite-remote": _tts_suite_remote,
 }
 _FIELDS: dict[str, tuple[str, ...]] = {
-    "gpu-release": ("url", "busy_wait_s", "force_after_wait"),
+    "gpu-release": ("url", "busy_wait_s", "force_after_wait", "token_file"),
     "llama-swap": ("url", "config_file", "no_eviction_models"),
     "tts-suite-remote": ("url", "host", "token_file", "busy_wait_s"),
 }

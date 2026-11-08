@@ -110,3 +110,19 @@ def test_failed_end_is_not_freed() -> None:
 def test_missing_answer_is_an_error() -> None:
     with pytest.raises(ConsumerError, match="did not answer"):
         release({RELEASE: answers(results(("other", "released")))}, "a")
+
+
+def test_a_token_goes_with_every_request_as_bearer() -> None:
+    # AIfred guards its release API with a token (GPU_RELEASE_API_TOKEN); the suites take none.
+    routes = {("GET", "/gpu/holders"): answers((200, {"holders": []})), RELEASE: answers(results(("a", "released")))}
+    with FakeService(routes).running() as fake:
+        service = GpuRelease("svc", fake.url, token="secret")
+        service.holders(GPUS)
+        service.release(held("a"), reason="loading X", deadline=time.monotonic() + 60)
+    assert [headers.get("authorization") for headers in fake.headers] == ["Bearer secret", "Bearer secret"]
+
+
+def test_without_a_token_no_authorization_header_is_sent() -> None:
+    with FakeService({("GET", "/gpu/holders"): answers((200, {"holders": []}))}).running() as fake:
+        GpuRelease("svc", fake.url).holders(GPUS)
+    assert "authorization" not in fake.headers[0]

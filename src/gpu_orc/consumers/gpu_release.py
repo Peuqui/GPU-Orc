@@ -4,6 +4,7 @@
 process's configuration. ``POST /gpu/release`` takes ``items``, ``force`` and ``reason`` and answers one
 result per item: ``released`` (the process with the CUDA context has ended, proven by the service),
 ``not_running``, ``busy`` (left alone, only without force) or ``failed`` (the end could not be proven).
+A service that guards the API with a token (AIfred) gets it as ``Authorization: Bearer``.
 """
 
 from __future__ import annotations
@@ -27,9 +28,14 @@ class GpuRelease:
     url: str
     busy_wait_s: float = 0.0
     force_after_wait: bool = False
+    token: str | None = None
+
+    @property
+    def _headers(self) -> dict[str, str]:
+        return {"Authorization": f"Bearer {self.token}"} if self.token else {}
 
     def holders(self, gpus: Sequence[Gpu]) -> list[Holder]:
-        status, body = request_json("GET", f"{self.url}/gpu/holders")
+        status, body = request_json("GET", f"{self.url}/gpu/holders", headers=self._headers)
         if status != 200 or not isinstance(body, dict) or not isinstance(body.get("holders"), list):
             raise ConsumerError(f"{self.name}: /gpu/holders answered HTTP {status}")
         known = {gpu.uuid for gpu in gpus}
@@ -71,7 +77,7 @@ class GpuRelease:
         # A release ends a process or stops a container, after a forced abort even a start; with the proof and a
         # `docker kill` that can take longer than a plain HTTP question, so the answer may take up to the deadline.
         timeout = max(1.0, deadline - time.monotonic())
-        status, answer = request_json("POST", f"{self.url}/gpu/release", body, timeout=timeout)
+        status, answer = request_json("POST", f"{self.url}/gpu/release", body, timeout=timeout, headers=self._headers)
         results = answer.get("results") if isinstance(answer, dict) else None
         if status not in (200, 409, 500) or not isinstance(results, list):
             raise ConsumerError(f"{self.name}: /gpu/release answered HTTP {status}")

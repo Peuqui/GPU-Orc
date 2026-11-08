@@ -38,6 +38,14 @@ consumers:
     busy_wait_s: 5            # wait this long for a reading that holds an engine or a start
     force_after_wait: true    # then have the service abort it (reading_aborted) and stop the container
 
+  # AIfred's face detection runs in a process of its own (item face-worker); its API wants a token
+  # (AIfred's GPU_RELEASE_API_TOKEN in a file readable by the service user only).
+  # - name: aifred
+  #   type: gpu-release
+  #   url: http://127.0.0.1:8002/api
+  #   token_file: ~/.config/gpu-orc/aifred.token
+  #   busy_wait_s: 5          # a detection takes a fraction of a second
+
   - name: llama-swap
     type: llama-swap
     url: http://127.0.0.1:11435

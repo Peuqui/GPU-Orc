@@ -32,6 +32,16 @@ def test_full_config(tmp_path: Path) -> None:
     assert str(ls.config_file).endswith("/ls.yaml") and "~" not in str(ls.config_file)
 
 
+def test_a_gpu_release_service_may_take_a_token(tmp_path: Path) -> None:
+    token = tmp_path / "aifred-token"
+    token.write_text("secret\n")
+    entry = {"name": "aifred", "type": "gpu-release", "url": "http://127.0.0.1:8002/api", "token_file": str(token)}
+    (aifred,) = load_config(write(tmp_path, {"consumers": [entry]})).consumers
+    assert isinstance(aifred, GpuRelease) and aifred.token == "secret"
+    stt = load_config(write(tmp_path, {"consumers": CONSUMERS[:1]})).consumers[0]
+    assert isinstance(stt, GpuRelease) and stt.token is None
+
+
 def test_network_listen_needs_a_token(tmp_path: Path) -> None:
     with pytest.raises(ConfigError, match="token_file"):
         load_config(write(tmp_path, {"listen": {"host": "0.0.0.0"}, "consumers": CONSUMERS}))

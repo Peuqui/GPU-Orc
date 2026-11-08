@@ -53,7 +53,7 @@ Errors always come as `{"error": "<text>"}`. An unknown path gives `404`.
 ### `GET /health`
 
 ```json
-{"status": "ok", "version": "0.7.0", "free_timeout_s": 180.0, "caller_timeout_s": 210.0}
+{"status": "ok", "version": "0.8.0", "free_timeout_s": 180.0, "caller_timeout_s": 210.0}
 ```
 
 ### `GET /loading` — the traffic light
@@ -251,6 +251,11 @@ consumers:
     url: http://127.0.0.1:5090
     busy_wait_s: 5                          # wait this long for a reading or a start
     force_after_wait: true                  # then have it aborted (reading_aborted), container stopped
+  - name: aifred
+    type: gpu-release
+    url: http://127.0.0.1:8002/api          # its face detection (face-worker)
+    token_file: ~/.config/gpu-orc/aifred.token   # AIfred's GPU_RELEASE_API_TOKEN
+    busy_wait_s: 5                          # a detection takes a fraction of a second
   - name: llama-swap
     type: llama-swap
     url: http://127.0.0.1:11435
@@ -258,14 +263,18 @@ consumers:
     no_eviction_models: ["*-vlm-*"]         # evict no persistent models when they load
 ```
 
-Without a value, `busy_wait_s: 0` and `force_after_wait: false` apply. Unknown keys of a consumer and
+Without a value, `busy_wait_s: 0` and `force_after_wait: false` apply. With `token_file`, GPU-Orc sends a
+`gpu-release` service `Authorization: Bearer <token>` with every request (AIfred requires it, the suites do not). Unknown keys of a consumer and
 duplicate consumer names keep GPU-Orc from starting. GPU-Orc reads llama-swap's config on every
 request; it may change while running.
 
 ## Callers
 
-- **AIfred** does not call GPU-Orc at the moment: since 26 October 2026 it frees the GPUs itself again
-  (through the suites' `/gpu/release` and llama-swap). Its GPU-Orc client lives on in its branch `gpu-orc`.
+- **AIfred** calls GPU-Orc before loading any model since 30 October 2026 (`POST /free {"model": …}`, before a
+  calibration the `gpus` form with `keep`), asks the traffic light (`GET /loading`) before its
+  image describer or its face detection puts anything on a card, and holds the cards through `POST /hold` /
+  `DELETE /hold` from its status bar. If GPU-Orc does not answer, AIfred loads anyway and says so loudly. With
+  the Vue rebuild AIfred is also a consumer (`gpu-release`, item `face-worker`, with a token).
 - **Agent-Orc** calls GPU-Orc for backends with local models (the backend's `gpu_orc` field with
   `port`, `model_server` if needed and `token_file` for remote machines). GPU-Orc runs on the model
   server's machine, at its address with the port from `gpu_orc`. Agent-Orc asks when Claude Code starts
