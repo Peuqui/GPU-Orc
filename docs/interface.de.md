@@ -211,17 +211,20 @@ seit der ersten Bitte an diesen Verbraucher) nur, wo es etwas zu sagen gibt.
 | `refused_busy` | Das Element war nach `busy_wait_s` noch beschäftigt: `force_after_wait` ist aus, oder auch der erzwingende Aufruf kam mit „beschäftigt“ zurück |
 | `timeout` | Das Gesamtlimit war erreicht, bevor das Element frei war: die Wartezeit wurde von der Frist abgeschnitten, oder die Anfrage kam aus der Schlange nicht mehr dran |
 | `kept` | Stand in `keep` |
-| `error` | Dienst nicht erreichbar oder unerwartete Antwort; llama-swap: Entladen gescheitert oder Modell danach noch geladen. Ein Verbraucher, der nicht sagen konnte, was er hält, steht als `error` mit leerem `item` |
+| `error` | Dienst nicht erreichbar oder unerwartete Antwort; llama-swap: Entladen gescheitert oder Modell danach noch geladen. Ein Verbraucher, der nicht sagen konnte, was er hält, steht als `error` mit leerem `item`, aber nur, wo er etwas halten könnte (siehe `free`) |
 | `would_release` | Nur bei `dry_run` |
 
 `memory` ist der belegte Speicher je betroffener Karte vor der Freigabe und nach der Nachprüfung
 (`after_mib` ist `null` bei `dry_run` und wenn die Anfrage aus der Schlange nicht mehr drankam).
 
 `free` ist `true`, wenn nach den Aktionen kein Element, das die Anfrage freiräumen sollte, mehr
-gemeldet wird, keine Aktion `not_freed` oder `error` ist und jeder Verbraucher sagen konnte, was er
-hält. Ausgenommen ist ein Verbraucher, den `keep` als Ganzes schützt: Kann er nichts melden, ist das
-kein Fehler der Anfrage (die Kalibrierung hält llama-swap an und lässt dann den Rest freiräumen);
-`status.errors` nennt ihn trotzdem. Unbekannter Speicher macht `free` nicht falsch, er steht im
+gemeldet wird, keine Aktion `not_freed` oder `error` ist und kein Verbraucher, der nicht sagen konnte,
+was er hält, auf den Karten sitzen könnte. Das kann er nur, wo eine Zielkarte Speicher belegt, den kein
+meldender Verbraucher erklärt (mindestens `min_freed_mib`, oder irgendein Speicher neben einem Halter,
+der keinen meldet): Auf leeren Karten oder solchen, deren Speicher die meldenden Verbraucher erklären,
+hält ein gestoppter Dienst nichts, und die Anfrage hängt nicht an ihm. Ein Verbraucher, den `keep` als
+Ganzes schützt, zählt nie (die Kalibrierung hält llama-swap an und lässt dann den Rest freiräumen).
+`status.errors` nennt jeden Verbraucher, der nichts melden konnte. Unbekannter Speicher allein macht `free` nicht falsch, solange jeder Verbraucher melden konnte; er steht im
 `status`. Ob ein Aufrufer bei `free: false` trotzdem lädt, entscheidet er.
 
 Fehler:
@@ -247,7 +250,8 @@ token_file: ~/.config/gpu-orc/token        # Pflicht, sobald host nicht nur Loop
 free_timeout_s: 180                         # Höchstdauer einer /free-Anfrage ab Eingang
 verify_timeout_s: 30                        # so lange nach einer Freigabe nachmessen (innerhalb free_timeout_s)
 min_freed_mib: 256                          # so viel muss sinken, wo der Dienst keinen Speicher meldet
-                                            # (höchstens so viel, wie vorher belegt war)
+                                            # (höchstens so viel, wie vorher belegt war); auch so viel
+                                            # unerklärter Speicher, bevor ein unerreichbarer Dienst zählt
 consumers:
   - name: stt-suite
     type: gpu-release

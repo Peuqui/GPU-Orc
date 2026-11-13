@@ -271,6 +271,31 @@ def test_consumer_that_cannot_report_is_an_error_and_not_free() -> None:
     assert result["free"] is False
 
 
+def test_consumer_that_cannot_report_does_not_matter_on_an_empty_card() -> None:
+    # A stopped service holds nothing: card C uses no memory, so nothing can be its.
+    result = make(service("stt", fail=True), server()).free(FreeRequest(reason="t", gpus=(2,)))
+    assert outcomes(result) == []
+    assert result["free"] is True
+    assert result["status"]["errors"] == [{"consumer": "stt", "detail": "stt is down"}]
+
+
+def test_consumer_that_cannot_report_matters_where_memory_is_unexplained() -> None:
+    # Card B: 500 MiB that no reporting consumer accounts for, more than min_freed_mib.
+    result = make(service("stt", fail=True), server()).free(FreeRequest(reason="t", gpus=(1,)))
+    assert outcomes(result) == [("stt", "", "error")]
+    assert result["free"] is False
+
+
+def test_memory_of_reporting_consumers_explains_a_card() -> None:
+    # Card A's 1000 MiB belong to the TTS item that reports them; it is released, the down STT does not matter.
+    m = Machine()
+    m.used[A] = 1000
+    tts = service("tts", Holder("tts", "qwen", frozenset({A}), {A: 1000}), machine=m)
+    result = make(tts, service("stt", fail=True), server(), machine=m).free(FreeRequest(reason="t", gpus=(0,)))
+    assert outcomes(result) == [("tts", "qwen", "released")]
+    assert result["free"] is True
+
+
 def test_a_kept_consumer_that_cannot_report_does_not_matter() -> None:
     # The calibration stops the model server, then has everything else cleared and the server kept.
     m = Machine()

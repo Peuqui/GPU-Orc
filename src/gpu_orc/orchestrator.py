@@ -169,11 +169,15 @@ class Orchestrator:
                     self._verify,
                     deadline,
                 )
-            actions = self._in_config_order(actions + kept + self._error_actions(report, request.keep))
             after = report if request.dry_run else self._collect(gpus)
+            # A consumer that cannot report may sit on the cards; whether it could, the cards tell: where
+            # every MiB belongs to a consumer that did report, there is no room for one that did not.
+            cards = gpus if request.dry_run else self._query()
+            unknown = _unkept_errors(after, request.keep) if self._unexplained(cards, targets, after) else []
+            errors = self._error_actions(report, request.keep) if unknown else []
+            actions = self._in_config_order(actions + kept + errors)
             remaining, _ = self._plan(request, server, targets, after.holders)
         failed = any(action.outcome in ("not_freed", "error") for action in actions)
-        unknown = _unkept_errors(after, request.keep)
         result = {
             "gpus": [{"index": gpu.index, "uuid": gpu.uuid} for gpu in gpus if gpu.uuid in targets],
             "already_running": False,
@@ -276,6 +280,18 @@ class Orchestrator:
                 errors.append({"consumer": name, "detail": str(error)})
         return _Report(holders, errors)
 
+    def _unexplained(self, gpus: Sequence[Gpu], targets: frozenset[str], report: _Report) -> bool:
+        """Whether a target card holds memory no reporting consumer accounts for (at least
+        ``min_freed_mib``, the amount that counts as something), or memory that cannot be accounted for
+        because a consumer on it reports none."""
+        for gpu in gpus:
+            if gpu.uuid not in targets:
+                continue
+            unattributed = _unattributed_mib(gpu, _on_card(gpu, report.holders))
+            if unattributed is None or unattributed >= self._verify.min_freed_mib:
+                return True
+        return False
+
     def _memory(self) -> dict[str, int]:
         return {gpu.uuid: gpu.memory_used_mib for gpu in self._query()}
 
@@ -336,12 +352,7 @@ def _unkept_errors(report: _Report, keep: Sequence[str]) -> list[dict[str, str]]
 
 def _gpu_json(gpu: Gpu, holders: Mapping[str, Sequence[Holder]]) -> dict[str, Any]:
     """One card of ``/status``."""
-    on_card = [holder for consumer_holders in holders.values() for holder in consumer_holders if gpu.uuid in holder.gpu_uuids]
-    reported = [holder.memory_mib.get(gpu.uuid) for holder in on_card]
-    if all(mib is not None for mib in reported):
-        unattributed: int | None = max(0, gpu.memory_used_mib - sum(mib for mib in reported if mib is not None))
-    else:
-        unattributed = None
+    on_card = _on_card(gpu, holders)
     return {
         "index": gpu.index,
         "uuid": gpu.uuid,
@@ -358,8 +369,20 @@ def _gpu_json(gpu: Gpu, holders: Mapping[str, Sequence[Holder]]) -> dict[str, An
             }
             for holder in on_card
         ],
-        "unattributed_mib": unattributed,
+        "unattributed_mib": _unattributed_mib(gpu, on_card),
     }
+
+
+def _on_card(gpu: Gpu, holders: Mapping[str, Sequence[Holder]]) -> list[Holder]:
+    return [holder for consumer_holders in holders.values() for holder in consumer_holders if gpu.uuid in holder.gpu_uuids]
+
+
+def _unattributed_mib(gpu: Gpu, on_card: Sequence[Holder]) -> int | None:
+    """The card's memory that none of its holders reports; None when a holder on it reports none."""
+    reported = [holder.memory_mib.get(gpu.uuid) for holder in on_card]
+    if any(mib is None for mib in reported):
+        return None
+    return max(0, gpu.memory_used_mib - sum(mib for mib in reported if mib is not None))
 
 
 def _action_json(action: Action) -> dict[str, Any]:

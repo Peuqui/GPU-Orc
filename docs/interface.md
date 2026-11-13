@@ -204,17 +204,21 @@ first request to that consumer) only where there is something to say.
 | `refused_busy` | The item was still busy after `busy_wait_s`: `force_after_wait` is off, or the forcing request also came back "busy" |
 | `timeout` | The overall limit was reached before the item was free: the limit cut the wait short, or the request never got its turn in the queue |
 | `kept` | Was in `keep` |
-| `error` | Service unreachable or an unexpected answer; llama-swap: unloading failed or the model is still loaded afterwards. A consumer that could not say what it holds appears as `error` with an empty `item` |
+| `error` | Service unreachable or an unexpected answer; llama-swap: unloading failed or the model is still loaded afterwards. A consumer that could not say what it holds appears as `error` with an empty `item`, but only where it could hold something (see `free`) |
 | `would_release` | Only with `dry_run` |
 
 `memory` is the used memory per affected GPU before the release and after the verification
 (`after_mib` is `null` with `dry_run` and when the request never got its turn in the queue).
 
 `free` is `true` when, after the actions, no item the request was to free is still reported, no
-action is `not_freed` or `error`, and every consumer could say what it holds. The exception is a
-consumer that `keep` protects as a whole: if it cannot report, that is no error of the request
-(calibration stops llama-swap and then has the rest cleared); `status.errors` still names it. Memory
-nobody reports does not make `free` false; it is in `status`. Whether a caller loads anyway on
+action is `not_freed` or `error`, and no consumer that could not say what it holds could sit on the
+cards. It could only where a target card holds memory that no reporting consumer accounts for (at
+least `min_freed_mib`, or any memory beside a holder that reports none): on cards that are empty, or
+whose memory the reporting consumers explain, a stopped service holds nothing, and the request is
+not held up by it. A consumer that `keep` protects as a whole never counts either (calibration stops
+llama-swap and then has the rest cleared). `status.errors` names every consumer that could not report. Memory
+nobody reports does not make `free` false by itself, as long as every consumer could report; it is in
+`status`. Whether a caller loads anyway on
 `free: false` is the caller's decision.
 
 Errors:
@@ -239,7 +243,8 @@ token_file: ~/.config/gpu-orc/token        # required as soon as host is not onl
 free_timeout_s: 180                         # longest a /free request may take from its arrival
 verify_timeout_s: 30                        # measure this long after a release (within free_timeout_s)
 min_freed_mib: 256                          # must go down by this much where the service reports no memory
-                                            # (at most by what was in use before)
+                                            # (at most by what was in use before); also the memory a card
+                                            # may hold unexplained before an unreachable consumer counts
 consumers:
   - name: stt-suite
     type: gpu-release
