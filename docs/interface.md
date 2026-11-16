@@ -92,12 +92,34 @@ would put something new on a card (a describer of another machine, a TTS contain
 leaves it alone. GPU-Orc ends nothing a caller loads without asking. Holding again keeps the time of the
 first hold and takes the new reason. A body without a non-empty `reason`: `400`.
 
+### `POST /work`, `GET /work`, `DELETE /work/<owner>` — a job runs here
+
+```json
+{"owner": "aifred", "reason": "AIfred: 2 running turn(s)", "ttl_s": 60}
+```
+
+A caller that runs a job on this machine reports it, so that whoever would restart the machine (the weekly
+reboot) can ask first. A report is a lease: it ends with `DELETE /work/<owner>` (owner URL-encoded; answer
+`{"ended": true, "work": [...]}`, `ended: false` when it was gone already) or by itself when `ttl_s` seconds pass
+without the same owner reporting again. Reporting again renews the lease, keeps the start and takes the new
+reason. Nothing is cleared, nothing is held: the cards stay as they are. The reports live in memory only.
+`GET /work` answers `{"work": [{"owner", "reason", "running_for_s", "expires_in_s"}]}` at once (no nvidia-smi);
+`GET /status` carries the same list as `work`. A body that is not exactly `owner`, `reason` (non-empty strings)
+and `ttl_s` (a positive number): `400`.
+
+`gpu-orc run-if-idle [--config PATH] -- <command>` asks `GET /work` on this machine and runs the command only
+when the list is empty (its exit code is the command's). With work running it skips the command and exits 0:
+no waiting, no deadline, the next date of the cron job tries again. When GPU-Orc does not answer it skips the
+command too and exits 3 with a message on stderr. The weekly reboot is
+`30 5 * * 1,3,5 root /home/mp/.local/share/gpu-orc/venv/bin/gpu-orc run-if-idle -- /sbin/reboot`.
+
 ### `GET /status` — who holds what
 
 ```json
 {
   "queue": {"running": true, "waiting": 1, "running_since_s": 42.0},
   "held": null,
+  "work": [],
   "gpus": [
     {
       "index": 0,

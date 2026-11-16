@@ -31,6 +31,10 @@ Karten freiräumt, statt dass jeder Aufrufer eine eigene Kopie dieser Logik mitb
   andere Arbeit) und räumt sofort alle Karten. Bis `DELETE /hold` melden `GET /loading` und `GET /status`
   den Halt, und Aufrufer, die etwas starten würden, legen nichts Neues auf die Karten. Der Halt liegt in
   `hold_file` und übersteht einen Neustart; was ein Aufrufer lädt, ohne zu fragen, beendet GPU-Orc nicht.
+- **Arbeit im Gange:** Wer hier einen Job laufen lässt (AIfred für jeden Lauf), meldet ihn mit `POST /work` als
+  Lease, die ohne Erneuerung von selbst endet; `DELETE /work/<owner>` beendet sie. `GET /work` und `GET /status`
+  zeigen, was läuft. `gpu-orc run-if-idle -- /sbin/reboot` führt einen Befehl nur aus, wenn nichts gemeldet ist:
+  der wöchentliche Neustart lässt einen laufenden Job in Ruhe (ohne Warten, der nächste Termin versucht es wieder).
 - **Nachgeprüft, nicht geglaubt:** Nach einer Freigabe fragt GPU-Orc den Dienst erneut und misst den
   Speicher der Karten mit nvidia-smi nach, bis `verify_timeout_s`. Ein Element, das noch gemeldet
   wird, oder Speicher, der nicht sinkt, ergibt `not_freed`.
@@ -51,6 +55,9 @@ Karten freiräumt, statt dass jeder Aufrufer eine eigene Kopie dieser Logik mitb
 | `POST /free` | Karten freiräumen: `{"gpus": [0, "GPU-…"] \| "all", ...}` oder `{"model": "<name>", ...}` |
 | `POST /hold` | Karten für jemanden freihalten und alle räumen: `{"reason": "..."}` |
 | `DELETE /hold` | Karten wieder freigeben |
+| `GET /work` | die Jobs, die gerade gemeldet sind (antwortet sofort) |
+| `POST /work` | einen Job melden oder seine Lease erneuern: `{"owner": "...", "reason": "...", "ttl_s": 60}` |
+| `DELETE /work/<owner>` | der Job ist zu Ende |
 
 `POST /free` nimmt genau eine von zwei Formen, dazu `reason` (Pflicht), `keep` und `dry_run`:
 

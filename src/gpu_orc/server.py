@@ -1,5 +1,5 @@
-"""HTTP interface: GET /health, GET /status, GET /loading, POST /free, POST and DELETE /hold (standard library
-server, one thread per request)."""
+"""HTTP interface: GET /health, GET /status, GET /loading, GET /work, POST /free, POST and DELETE /hold, POST /work,
+DELETE /work/<owner> (standard library server, one thread per request)."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import hmac
 import ipaddress
 import json
 import subprocess
+import urllib.parse
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -15,6 +16,8 @@ from . import __version__
 from .orchestrator import FreeRequest, ModelServerUnreachable, NotFound, Orchestrator, RequestError
 
 MAX_BODY_BYTES = 64 * 1024
+WORK_PATH_PREFIX = "/work/"
+WORK_FIELDS = {"owner", "reason", "ttl_s"}
 FREE_FIELDS = {"gpus", "model", "model_server", "keep", "reason", "dry_run"}
 
 
@@ -45,6 +48,8 @@ class Handler(BaseHTTPRequestHandler):
             self._answer(orchestrator.status)
         elif self.path == "/loading":
             self._answer(orchestrator.loading)
+        elif self.path == "/work":
+            self._answer(orchestrator.work)
         else:
             self._send(HTTPStatus.NOT_FOUND, {"error": f"no such path: {self.path}"})
 
@@ -56,6 +61,8 @@ class Handler(BaseHTTPRequestHandler):
             act: Any = self.server.orchestrator.free
         elif self.path == "/hold":
             parse, act = parse_hold_request, self.server.orchestrator.hold
+        elif self.path == "/work":
+            parse, act = parse_work_request, lambda request: self.server.orchestrator.begin_work(*request)
         else:
             self._send(HTTPStatus.NOT_FOUND, {"error": f"no such path: {self.path}"})
             return
@@ -69,10 +76,13 @@ class Handler(BaseHTTPRequestHandler):
     def do_DELETE(self) -> None:
         if not self._authorized():
             return
-        if self.path != "/hold":
+        if self.path == "/hold":
+            self._answer(self.server.orchestrator.release_hold)
+        elif self.path.startswith(WORK_PATH_PREFIX) and len(self.path) > len(WORK_PATH_PREFIX):
+            owner = urllib.parse.unquote(self.path.removeprefix(WORK_PATH_PREFIX))
+            self._answer(lambda: self.server.orchestrator.end_work(owner))
+        else:
             self._send(HTTPStatus.NOT_FOUND, {"error": f"no such path: {self.path}"})
-            return
-        self._answer(self.server.orchestrator.release_hold)
 
     def _answer(self, produce: Any) -> None:
         try:
@@ -133,6 +143,18 @@ def parse_hold_request(body: Any) -> str:
             or not body["reason"].strip():
         raise RequestError('body: {"reason": "<who holds the cards, and why>"}')
     return body["reason"].strip()
+
+
+def parse_work_request(body: Any) -> tuple[str, str, float]:
+    """``POST /work``: ``{"owner": "<who>", "reason": "<what runs>", "ttl_s": <seconds until the lease ends unless renewed>}``."""
+    if not isinstance(body, dict) or set(body) != WORK_FIELDS:
+        raise RequestError('body: {"owner": "...", "reason": "...", "ttl_s": <seconds>}')
+    owner, reason, ttl_s = body["owner"], body["reason"], body["ttl_s"]
+    if not all(isinstance(text, str) and text.strip() for text in (owner, reason)):
+        raise RequestError("owner and reason must be non-empty strings")
+    if isinstance(ttl_s, bool) or not isinstance(ttl_s, (int, float)) or ttl_s <= 0:
+        raise RequestError("ttl_s must be a positive number of seconds")
+    return owner.strip(), reason.strip(), float(ttl_s)
 
 
 def parse_free_request(body: Any) -> FreeRequest:

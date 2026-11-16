@@ -14,6 +14,7 @@ from .gpus import Gpu, GpuSpecError, query_gpus, resolve_gpu
 from .hold import HoldStore
 from .model import Action, Consumer, ConsumerError, Holder, ModelServer, UnknownModel
 from .verify import DEFAULT_VERIFY, StillHeld, VerifySettings, verify
+from .work import WorkStore
 
 # How much longer than the overall limit a caller's HTTP timeout should be (answer, nvidia-smi).
 CALLER_MARGIN_S = 30.0
@@ -59,9 +60,11 @@ class Orchestrator:
         load_grace_s: float = DEFAULT_LOAD_GRACE_S,
         *,
         hold: HoldStore,
+        work: WorkStore,
     ) -> None:
         self._consumers = {consumer.name: consumer for consumer in consumers}
         self._hold = hold
+        self._work = work
         self._load_grace_s = load_grace_s
         self._announced: dict[str, float] = {}  # model -> time.monotonic() until it counts as loading
         self._announced_lock = threading.Lock()
@@ -84,6 +87,7 @@ class Orchestrator:
         return {
             "queue": {"running": state.running, "waiting": state.waiting, "running_since_s": state.running_since_s},
             "held": self._held_json(),
+            "work": self._work.active(),
             **self._status_body(gpus, self._collect(gpus), [gpu.uuid for gpu in gpus]),
         }
 
@@ -98,6 +102,19 @@ class Orchestrator:
         """Let go of the cards: new things may go on them again."""
         self._hold.clear()
         return {"held": None}
+
+    def begin_work(self, owner: str, reason: str, ttl_s: float) -> dict[str, Any]:
+        """Somebody reports a job on this machine (work.py); reporting again renews the lease."""
+        self._work.begin(owner, reason, ttl_s)
+        return {"work": self._work.active()}
+
+    def end_work(self, owner: str) -> dict[str, Any]:
+        ended = self._work.end(owner)
+        return {"ended": ended, "work": self._work.active()}
+
+    def work(self) -> dict[str, Any]:
+        """The jobs reported right now; answers at once, without nvidia-smi and without asking the consumers."""
+        return {"work": self._work.active()}
 
     def _held_json(self) -> dict[str, str] | None:
         hold = self._hold.get()

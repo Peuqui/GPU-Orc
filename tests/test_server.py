@@ -2,7 +2,7 @@ import json
 import threading
 import urllib.error
 import urllib.request
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from http import HTTPStatus
 from pathlib import Path
 from typing import Any
@@ -12,14 +12,17 @@ from fakes import GPUS
 from test_orchestrator import FakeService, model, server
 
 from gpu_orc.hold import HoldStore
+from gpu_orc.idle_run import run_if_idle
 from gpu_orc.orchestrator import Orchestrator, RequestError
 from gpu_orc.server import GpuOrcServer, authorization_error, parse_free_request
+from gpu_orc.work import WorkStore
 
 
 @pytest.fixture
 def url(tmp_path: Path) -> Iterator[str]:
     consumers = [FakeService("stt"), server(model("big", GPUS[0].uuid))]
-    orchestrator = Orchestrator(consumers, 660, query=lambda: list(GPUS), hold=HoldStore(tmp_path / "hold.json"))
+    orchestrator = Orchestrator(consumers, 660, query=lambda: list(GPUS), hold=HoldStore(tmp_path / "hold.json"),
+                                work=WorkStore())
     httpd = GpuOrcServer(("127.0.0.1", 0), orchestrator, token=None)
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
@@ -100,7 +103,8 @@ def test_authorization() -> None:
 def quiet_url(tmp_path: Path) -> Iterator[str]:
     """A machine where nothing is held: a hold has nothing to clear and answers at once."""
     orchestrator = Orchestrator([FakeService("stt"), server()], 660, query=lambda: list(GPUS),
-                                hold=HoldStore(tmp_path / "hold.json"))
+                                hold=HoldStore(tmp_path / "hold.json"),
+                                work=WorkStore())
     httpd = GpuOrcServer(("127.0.0.1", 0), orchestrator, token=None)
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
@@ -122,3 +126,34 @@ def test_hold_and_let_go(quiet_url: str) -> None:
 def test_a_hold_needs_a_reason(url: str, body: Any) -> None:
     status, answer = call(f"{url}/hold", "POST", body)
     assert status == 400 and "reason" in answer["error"]
+
+
+def test_work_over_http(url: str) -> None:
+    assert call(f"{url}/work") == (200, {"work": []})
+    status, body = call(f"{url}/work", "POST", {"owner": "aifred/job 12", "reason": "digest", "ttl_s": 300})
+    assert status == 200 and [work["owner"] for work in body["work"]] == ["aifred/job 12"]
+    assert [work["reason"] for work in call(f"{url}/status")[1]["work"]] == ["digest"]
+    assert call(f"{url}/work/aifred%2Fjob%2012", "DELETE") == (200, {"ended": True, "work": []})
+    assert call(f"{url}/work/aifred%2Fjob%2012", "DELETE") == (200, {"ended": False, "work": []})
+    assert call(f"{url}/work", "POST", {"owner": "o"})[0] == 400
+    assert call(f"{url}/work/", "DELETE")[0] == 404
+
+
+def test_run_if_idle_runs_the_command_only_without_work(url: str) -> None:
+    ran: list[list[str]] = []
+
+    def run(command: Sequence[str]) -> int:
+        ran.append(list(command))
+        return 7
+
+    assert run_if_idle(url, ["/sbin/reboot"], run) == 7 and ran == [["/sbin/reboot"]]
+    call(f"{url}/work", "POST", {"owner": "aifred", "reason": "2 running turn(s)", "ttl_s": 60})
+    assert run_if_idle(url, ["/sbin/reboot"], run) == 0 and len(ran) == 1
+    call(f"{url}/work/aifred", "DELETE")
+    assert run_if_idle(url, ["/sbin/reboot"], run) == 7 and len(ran) == 2
+
+
+def test_run_if_idle_skips_the_command_when_gpu_orc_does_not_answer() -> None:
+    ran: list[list[str]] = []
+    assert run_if_idle("http://127.0.0.1:9", ["/sbin/reboot"], lambda command: ran.append(list(command))) == 3
+    assert ran == []

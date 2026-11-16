@@ -96,12 +96,34 @@ von dort gestartet wird), lässt sie in Ruhe. Was ein Aufrufer lädt, ohne zu fr
 Ein zweiter Halt behält die Zeit des ersten und übernimmt den neuen Grund. Ein Body ohne nicht-leeren
 `reason`: `400`.
 
+### `POST /work`, `GET /work`, `DELETE /work/<owner>` — hier läuft ein Job
+
+```json
+{"owner": "aifred", "reason": "AIfred: 2 running turn(s)", "ttl_s": 60}
+```
+
+Wer auf diesem Rechner einen Job laufen lässt, meldet ihn, damit der, der den Rechner neu starten würde (der
+wöchentliche Neustart), vorher fragen kann. Eine Meldung ist eine Lease: sie endet mit `DELETE /work/<owner>`
+(Besitzer URL-kodiert; Antwort `{"ended": true, "work": [...]}`, `ended: false`, wenn sie schon weg war) oder von
+selbst, wenn `ttl_s` Sekunden ohne erneute Meldung desselben Besitzers vergehen. Wer erneut meldet, erneuert die
+Lease, behält den Start und übernimmt den neuen Grund. Nichts wird geräumt oder gehalten: die Karten bleiben,
+wie sie sind. Die Meldungen liegen nur im Speicher. `GET /work` antwortet sofort (ohne nvidia-smi) mit
+`{"work": [{"owner", "reason", "running_for_s", "expires_in_s"}]}`; `GET /status` führt dieselbe Liste als `work`.
+Ein Body, der nicht genau `owner`, `reason` (nicht-leere Texte) und `ttl_s` (positive Zahl) enthält: `400`.
+
+`gpu-orc run-if-idle [--config PFAD] -- <Befehl>` fragt `GET /work` auf diesem Rechner und führt den Befehl nur
+aus, wenn die Liste leer ist (sein Exit-Code ist der des Befehls). Läuft Arbeit, überspringt es den Befehl und
+endet mit 0: kein Warten, keine Obergrenze, der nächste Termin des Cron-Jobs versucht es wieder. Antwortet
+GPU-Orc nicht, überspringt es den Befehl ebenfalls und endet mit 3 und einer Meldung auf stderr. Der wöchentliche
+Neustart lautet `30 5 * * 1,3,5 root /home/mp/.local/share/gpu-orc/venv/bin/gpu-orc run-if-idle -- /sbin/reboot`.
+
 ### `GET /status` — wer hält was
 
 ```json
 {
   "queue": {"running": true, "waiting": 1, "running_since_s": 42.0},
   "held": null,
+  "work": [],
   "gpus": [
     {
       "index": 0,

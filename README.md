@@ -29,6 +29,10 @@ cards, instead of every caller carrying its own copy of that logic.
   clears every card at once. Until `DELETE /hold`, `GET /loading` and `GET /status` say so, and callers
   that would start something put nothing new on the cards. The hold lives in `hold_file` and outlasts a
   restart; GPU-Orc ends nothing a caller loads without asking.
+- **Work in progress:** a caller that runs a job here (AIfred, for every turn it runs) reports it with
+  `POST /work` as a lease that ends by itself without renewal; `DELETE /work/<owner>` ends it. `GET /work`
+  and `GET /status` list what runs. `gpu-orc run-if-idle -- /sbin/reboot` runs a command only when nothing is
+  reported: the weekly reboot leaves a running job alone (no waiting, the next date tries again).
 - **Checked, not believed:** after a release GPU-Orc asks the service again and measures the card
   memory with nvidia-smi, until `verify_timeout_s`. An item still reported, or memory that did not
   go down, is `not_freed`.
@@ -49,6 +53,9 @@ cards, instead of every caller carrying its own copy of that logic.
 | `POST /free` | free GPUs: `{"gpus": [0, "GPU-…"] \| "all", ...}` or `{"model": "<name>", ...}` |
 | `POST /hold` | hold the cards for somebody and clear them all: `{"reason": "..."}` |
 | `DELETE /hold` | let go of the cards |
+| `GET /work` | the jobs reported right now (answers at once) |
+| `POST /work` | report a job, or renew its lease: `{"owner": "...", "reason": "...", "ttl_s": 60}` |
+| `DELETE /work/<owner>` | the job is over |
 
 `POST /free` takes exactly one of two forms, plus `reason` (required), `keep` and `dry_run`:
 

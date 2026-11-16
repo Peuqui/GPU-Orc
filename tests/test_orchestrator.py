@@ -14,6 +14,7 @@ from gpu_orc.hold import HoldStore
 from gpu_orc.model import Action, Consumer, ConsumerError, Holder, UnknownModel
 from gpu_orc.orchestrator import FreeRequest, ModelServerUnreachable, NotFound, Orchestrator, RequestError
 from gpu_orc.verify import VerifySettings
+from gpu_orc.work import WorkStore
 
 A, B, C = (gpu.uuid for gpu in GPUS)
 FAST = VerifySettings(timeout_s=0.3, min_freed_mib=256, poll_s=0.05)
@@ -117,7 +118,8 @@ def make(
 ) -> Orchestrator:
     query = machine.query if machine is not None else lambda: list(GPUS)
     hold = HoldStore(Path(tempfile.mkdtemp()) / "hold.json")
-    return Orchestrator(consumers, timeout, query=query, verify_settings=FAST, load_grace_s=load_grace_s, hold=hold)
+    return Orchestrator(consumers, timeout, query=query, verify_settings=FAST, load_grace_s=load_grace_s, hold=hold,
+                        work=WorkStore())
 
 
 def outcomes(result: dict[str, Any]) -> list[tuple[str, str, str]]:
