@@ -123,3 +123,14 @@ def test_unreachable() -> None:
         GpuOrc("http://127.0.0.1:9").loading()
     with pytest.raises(GpuOrcError, match="not reachable"):
         GpuOrc("http://127.0.0.1:9").free_for_model("big", "test")
+
+
+def test_model_server_is_sent_only_when_given() -> None:
+    with serving(machine(two_servers=True)) as port:
+        orc = GpuOrc(f"http://127.0.0.1:{port}")
+        with pytest.raises(GpuOrcError, match="HTTP 400"):  # several model servers: the name is required
+            orc.free_for_model("big", "test")
+        with pytest.raises(GpuOrcError, match="HTTP 404"):
+            orc.free_for_model("big", "test", model_server="nope")
+        assert orc.free_for_model("big", "test", model_server="ls").already_running
+        assert not orc.free_for_model("big", "test", model_server="vllm").already_running

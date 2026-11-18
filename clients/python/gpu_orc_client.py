@@ -74,9 +74,17 @@ class GpuOrc:
         self.url = url.rstrip("/")
         self.token = token
 
-    def free_for_model(self, model: str, reason: str, keep: Sequence[str] = ()) -> FreeResult:
-        """Clear the cards ``model`` is about to load on. Waits as long as GPU-Orc's time limit."""
-        return self._free({"model": model, "reason": reason, "keep": list(keep)})
+    def free_for_model(
+        self, model: str, reason: str, keep: Sequence[str] = (), model_server: str | None = None
+    ) -> FreeResult:
+        """Clear the cards ``model`` is about to load on. Waits as long as GPU-Orc's time limit.
+
+        ``model_server`` names the model server; GPU-Orc requires it only with several of them.
+        """
+        body: dict[str, Any] = {"model": model, "reason": reason, "keep": list(keep)}
+        if model_server is not None:
+            body["model_server"] = model_server
+        return self._free(body)
 
     def free_gpus(
         self, gpus: Sequence[int | str] | Literal["all"], reason: str, keep: Sequence[str] = ()

@@ -1,4 +1,5 @@
 import importlib.util
+import json
 from pathlib import Path
 
 import pytest
@@ -9,7 +10,8 @@ assert spec is not None and spec.loader is not None
 sync_clients = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(sync_clients)
 
-TARGETS = ["HaemoTrace/backend/services/gpu_orc_client.py", "PharmaLens/repo/src/backend/services/gpu-orc-client.js"]
+CONSUMERS = json.loads((SCRIPT.parent.parent / "clients" / "consumers.json").read_text())["consumers"]
+TARGETS = [f"{consumer['repo']}/{consumer['target']}" for consumer in CONSUMERS]  # HaemoTrace, PharmaLens, ...
 
 
 def make_repos(root: Path) -> None:

@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from fakes import GPUS
-from test_orchestrator import FAST, FakeService, Machine, model, server, service
+from test_orchestrator import FAST, MODELS, FakeServer, FakeService, Machine, model, server, service
 
 from gpu_orc.hold import HoldStore
 from gpu_orc.model import Action, Holder
@@ -26,7 +26,7 @@ class Stubborn(FakeService):
         return [Action(self.name, h.item, "refused_busy", "still busy") for h in holders]
 
 
-def machine(*, stubborn: bool = False) -> Orchestrator:
+def machine(*, stubborn: bool = False, two_servers: bool = False) -> Orchestrator:
     """stt holds a worker on card B, "ls" runs the main model "big" on card A. With ``stubborn``, tts holds an
     engine on card C that refuses to let go; the model "elsewhere" lives there."""
     mem = Machine()
@@ -36,5 +36,7 @@ def machine(*, stubborn: bool = False) -> Orchestrator:
     ]
     if stubborn:
         consumers.append(Stubborn("tts", [Holder("tts", "qwen", frozenset({C}))], mem))
+    if two_servers:
+        consumers.append(FakeServer("vllm", [], mem, models=MODELS))
     return Orchestrator(consumers, 30, query=mem.query, verify_settings=FAST, hold=HoldStore(Path(tempfile.mkdtemp()) / "hold.json"),
                         work=WorkStore())
