@@ -1,0 +1,3 @@
+# The copies land in programs with stricter limits (HaemoTrace: 100 characters); the source keeps to the strictest.
+extend = "../../pyproject.toml"
+line-length = 100

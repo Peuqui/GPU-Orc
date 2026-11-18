@@ -1,10 +1,11 @@
 """Client for GPU-Orc's HTTP interface (docs/interface.md). Standard library only, synchronous.
 
-This file is copied to the programs that call GPU-Orc by GPU-Orc/scripts/sync_clients.py. Edit it only in
-GPU-Orc/clients/python/, never in a copy. Async callers wrap the calls in ``asyncio.to_thread``.
+This file is copied to the programs that call GPU-Orc by GPU-Orc/scripts/sync_clients.py.
+Edit it only in GPU-Orc/clients/python/, never in a copy. Async callers wrap the calls in
+``asyncio.to_thread``.
 
-The client knows the protocol and nothing else: it has no "off" state (a caller that runs without GPU-Orc
-does not create a client) and it decides nothing about what a problem means for the caller.
+The client knows the protocol and nothing else: it has no "off" state (a caller that runs without
+GPU-Orc does not create a client) and it decides nothing about what a problem means for the caller.
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ FINE_OUTCOMES = frozenset({"released", "released_forced", "kept"})
 
 
 class GpuOrcError(RuntimeError):
-    """GPU-Orc is not reachable, answered an HTTP error, or answered in a form this client does not know."""
+    """GPU-Orc is not reachable, answered an HTTP error, or in a form this client does not know."""
 
 
 @dataclass(frozen=True)
@@ -47,7 +48,8 @@ class FreeResult:
         if self.already_running:
             return []
         lines = [
-            f"{action.consumer} {action.item}: {action.outcome}" + (f" ({action.detail})" if action.detail else "")
+            f"{action.consumer} {action.item}: {action.outcome}"
+            + (f" ({action.detail})" if action.detail else "")
             for action in self.actions
             if action.outcome not in FINE_OUTCOMES
         ]
@@ -73,22 +75,32 @@ class GpuOrc:
         self.token = token
 
     def free_for_model(self, model: str, reason: str, keep: Sequence[str] = ()) -> FreeResult:
-        """Clear the cards ``model`` is about to load on. Waits as long as GPU-Orc's own time limit."""
+        """Clear the cards ``model`` is about to load on. Waits as long as GPU-Orc's time limit."""
         return self._free({"model": model, "reason": reason, "keep": list(keep)})
 
-    def free_gpus(self, gpus: Sequence[int | str] | Literal["all"], reason: str, keep: Sequence[str] = ()) -> FreeResult:
-        """Clear the given cards (indices, UUIDs or ``"all"``), model server's main models included unless kept."""
-        return self._free({"gpus": gpus if isinstance(gpus, str) else list(gpus), "reason": reason, "keep": list(keep)})
+    def free_gpus(
+        self, gpus: Sequence[int | str] | Literal["all"], reason: str, keep: Sequence[str] = ()
+    ) -> FreeResult:
+        """Clear the given cards (indices, UUIDs or ``"all"``), main models included unless kept."""
+        return self._free(
+            {
+                "gpus": gpus if isinstance(gpus, str) else list(gpus),
+                "reason": reason,
+                "keep": list(keep),
+            }
+        )
 
     def loading(self) -> TrafficLight:
         answer = self._call("GET", "/loading", QUICK_TIMEOUT_S)
         try:
-            return TrafficLight(tuple(str(model) for model in answer["loading"]), _held(answer["held"]))
+            return TrafficLight(
+                tuple(str(model) for model in answer["loading"]), _held(answer["held"])
+            )
         except (KeyError, TypeError) as error:
             raise GpuOrcError(f"GPU-Orc /loading has an unknown form: {error!r}") from error
 
     def hold(self, reason: str) -> FreeResult:
-        """Keep the cards for somebody; GPU-Orc clears them all at once, the result is that clearing."""
+        """Keep the cards for somebody; GPU-Orc clears them all at once, the result is that."""
         answer = self._call("POST", "/hold", self._caller_timeout(), {"reason": reason})
         return _free_result(answer.get("free"), "/hold")
 
@@ -96,14 +108,16 @@ class GpuOrc:
         self._call("DELETE", "/hold", QUICK_TIMEOUT_S)
 
     def work_begin(self, owner: str, reason: str, ttl_s: float) -> None:
-        """Report a job running here, or renew its lease; it ends by itself ``ttl_s`` seconds after the last report."""
-        self._call("POST", "/work", QUICK_TIMEOUT_S, {"owner": owner, "reason": reason, "ttl_s": ttl_s})
+        """Report a job running here or renew its lease; it ends ``ttl_s`` s after the last one."""
+        self._call(
+            "POST", "/work", QUICK_TIMEOUT_S, {"owner": owner, "reason": reason, "ttl_s": ttl_s}
+        )
 
     def work_end(self, owner: str) -> None:
         self._call("DELETE", f"/work/{urllib.parse.quote(owner, safe='')}", QUICK_TIMEOUT_S)
 
     def status(self) -> dict[str, Any]:
-        """GPU-Orc's ``GET /status`` as it is (who holds what per card); callers read what they need."""
+        """GPU-Orc's ``GET /status`` as it is (who holds what per card)."""
         return self._call("GET", "/status", QUICK_TIMEOUT_S)
 
     def _free(self, body: dict[str, Any]) -> FreeResult:
@@ -116,7 +130,9 @@ class GpuOrc:
             raise GpuOrcError("GPU-Orc /health names no caller_timeout_s")
         return float(timeout)
 
-    def _call(self, method: str, path: str, timeout: float, body: dict[str, Any] | None = None) -> dict[str, Any]:
+    def _call(
+        self, method: str, path: str, timeout: float, body: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         request = urllib.request.Request(
             self.url + path, data=None if body is None else json.dumps(body).encode(), method=method
         )
@@ -128,7 +144,9 @@ class GpuOrc:
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 raw = response.read()
         except urllib.error.HTTPError as error:
-            raise GpuOrcError(f"GPU-Orc refused {path} (HTTP {error.code}): {_error_text(error)}") from error
+            raise GpuOrcError(
+                f"GPU-Orc refused {path} (HTTP {error.code}): {_error_text(error)}"
+            ) from error
         except (OSError, http.client.HTTPException) as error:  # URLError and timeouts are OSErrors
             raise GpuOrcError(f"GPU-Orc not reachable at {self.url} ({path}): {error!r}") from error
         try:
@@ -158,7 +176,9 @@ def _free_result(answer: Any, path: str) -> FreeResult:
             free=bool(answer["free"]),
             already_running=bool(answer["already_running"]),
             actions=tuple(
-                FreeAction(a["consumer"], a["item"], a["outcome"], a.get("detail", ""), a.get("waited_s"))
+                FreeAction(
+                    a["consumer"], a["item"], a["outcome"], a.get("detail", ""), a.get("waited_s")
+                )
                 for a in answer["actions"]
             ),
         )
