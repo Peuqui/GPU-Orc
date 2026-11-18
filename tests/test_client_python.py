@@ -4,15 +4,20 @@ from __future__ import annotations
 
 import socket
 import sys
+import urllib.request
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 from client_setup import machine
 from fakes import serving
 
+from gpu_orc.gpus import NVIDIA_SMI_TIMEOUT_S
+from gpu_orc.http_json import REQUEST_TIMEOUT_S
+
 sys.path.insert(0, str(Path(__file__).parent.parent / "clients" / "python"))
-from gpu_orc_client import GpuOrc, GpuOrcError
+from gpu_orc_client import LOADING_TIMEOUT_S, STATUS_TIMEOUT_S, GpuOrc, GpuOrcError
 
 
 @pytest.fixture
@@ -121,6 +126,8 @@ def test_token() -> None:
 def test_unreachable() -> None:
     with pytest.raises(GpuOrcError, match="not reachable"):
         GpuOrc("http://127.0.0.1:9").loading()
+    with pytest.raises(GpuOrcError, match=r"not reachable at http://127\.0\.0\.1:9 \(/loading\)"):
+        GpuOrc("http://127.0.0.1:9/").loading()
     with pytest.raises(GpuOrcError, match="not reachable"):
         GpuOrc("http://127.0.0.1:9").free_for_model("big", "test")
 
@@ -134,3 +141,37 @@ def test_model_server_is_sent_only_when_given() -> None:
             orc.free_for_model("big", "test", model_server="nope")
         assert orc.free_for_model("big", "test", model_server="ls").already_running
         assert not orc.free_for_model("big", "test", model_server="vllm").already_running
+
+
+def test_free_waits_as_long_as_gpu_orc_says_and_status_as_long_as_it_needs(
+    orc: GpuOrc, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    caller_timeout_s = orc._call("GET", "/health", 5)["caller_timeout_s"]
+    waits: dict[str, float] = {}
+    real_urlopen = urllib.request.urlopen
+
+    def recording_urlopen(request: urllib.request.Request, timeout: float) -> Any:
+        waits[request.full_url.rsplit("/", 1)[1]] = timeout
+        return real_urlopen(request, timeout=timeout)
+
+    monkeypatch.setattr(urllib.request, "urlopen", recording_urlopen)
+    orc.free_for_model("small-vlm", "test")
+    orc.status()
+    orc.loading()
+    assert waits["free"] == caller_timeout_s
+    assert waits["status"] == STATUS_TIMEOUT_S
+    # A slow traffic light counts as red: the caller then puts nothing on a card instead of waiting.
+    assert waits["loading"] == LOADING_TIMEOUT_S < STATUS_TIMEOUT_S
+
+
+def test_a_traffic_light_of_an_unknown_form_is_an_error(
+    orc: GpuOrc, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(GpuOrc, "_call", lambda *args, **kwargs: {"loading": []})  # no "held"
+    with pytest.raises(GpuOrcError, match="unknown form"):
+        orc.loading()
+
+
+def test_status_timeout_covers_the_servers_own_limits() -> None:
+    """/status asks nvidia-smi, then every consumer in parallel."""
+    assert STATUS_TIMEOUT_S > NVIDIA_SMI_TIMEOUT_S + REQUEST_TIMEOUT_S

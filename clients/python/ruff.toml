@@ -1,3 +1,7 @@
-# The copies land in programs with stricter limits (HaemoTrace: 100 characters); the source keeps to the strictest.
+# The copies land in programs with stricter limits (HaemoTrace: 100 characters); the source keeps to the strictest,
+# and checks the length itself (E501), so a long line shows here and not first in a copy.
 extend = "../../pyproject.toml"
 line-length = 100
+
+[lint]
+extend-select = ["E501"]

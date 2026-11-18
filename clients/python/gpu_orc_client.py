@@ -19,7 +19,13 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
-QUICK_TIMEOUT_S = 5  # GPU-Orc answers everything but /free and /hold at once
+QUICK_TIMEOUT_S = 5  # GPU-Orc answers /health, /work and DELETE /hold at once
+# /loading asks the model servers too, but stays quick on purpose: a slow traffic light is red
+# (GpuOrcError), and the caller then puts nothing on a card instead of waiting before every start.
+LOADING_TIMEOUT_S = QUICK_TIMEOUT_S
+# /status asks nvidia-smi and every consumer, each up to 10 s. Tied to GPU-Orc's own limits by
+# tests/test_client_python.py.
+STATUS_TIMEOUT_S = 25
 # Outcomes after which the cards are as the caller wanted them; any other outcome is a problem.
 FINE_OUTCOMES = frozenset({"released", "released_forced", "kept"})
 
@@ -99,7 +105,7 @@ class GpuOrc:
         )
 
     def loading(self) -> TrafficLight:
-        answer = self._call("GET", "/loading", QUICK_TIMEOUT_S)
+        answer = self._call("GET", "/loading", LOADING_TIMEOUT_S)
         try:
             return TrafficLight(
                 tuple(str(model) for model in answer["loading"]), _held(answer["held"])
@@ -126,7 +132,7 @@ class GpuOrc:
 
     def status(self) -> dict[str, Any]:
         """GPU-Orc's ``GET /status`` as it is (who holds what per card)."""
-        return self._call("GET", "/status", QUICK_TIMEOUT_S)
+        return self._call("GET", "/status", STATUS_TIMEOUT_S)
 
     def _free(self, body: dict[str, Any]) -> FreeResult:
         return _free_result(self._call("POST", "/free", self._caller_timeout(), body), "/free")
