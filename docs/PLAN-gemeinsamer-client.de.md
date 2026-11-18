@@ -1,6 +1,10 @@
 # Plan: ein gemeinsamer Client für GPU-Orc
 
-Stand 18.11.2026, Entwurf zur Entscheidung (Peuqui). Noch kein Code.
+Stand 18.11.2026: **umgesetzt und auf dem Mini ausgerollt**. Alle sechs Programme nutzen die Kopie
+(`clients/consumers.json`), kein Abbruchkriterium trat ein. Offen: Agent-Orc auf Aragon nachziehen (Aragon war aus).
+Abweichungen vom Entwurf: `model_server` kam als Protokollfeld in den Client (Agent-Orc, AIfred); `/status` hat eine
+eigene Zeitgrenze (25 s, per Test an GPU-Orcs innere Grenzen gekoppelt), `/loading` bleibt bewusst bei 5 s (langsam
+= rot); die STT-Suite beachtet jetzt wie die TTS-Suite auch gehaltene Karten.
 
 ## Ziel und Grenzen
 
