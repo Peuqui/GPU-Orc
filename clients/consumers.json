@@ -1,7 +1,9 @@
 {
-  "_comment": "Programs that get a copy of the client. Later: AIfred, Agent-Orc, TTS-Suite, STT-Suite. repo = folder name under --repos; target = path inside the repo.",
+  "_comment": "Programs that get a copy of the client. Later: AIfred, Agent-Orc. repo = folder name under --repos; target = path inside the repo.",
   "consumers": [
     {"name": "HaemoTrace", "repo": "HaemoTrace", "language": "python", "target": "backend/services/gpu_orc_client.py"},
-    {"name": "PharmaLens", "repo": "PharmaLens/repo", "language": "js", "target": "src/backend/services/gpu-orc-client.js"}
+    {"name": "PharmaLens", "repo": "PharmaLens/repo", "language": "js", "target": "src/backend/services/gpu-orc-client.js"},
+    {"name": "TTS-Suite", "repo": "TTS-Suite", "language": "python", "target": "src/tts_suite/gpu_orc_client.py"},
+    {"name": "STT-Suite", "repo": "STT-Suite", "language": "python", "target": "gpu_orc_client.py"}
   ]
 }
