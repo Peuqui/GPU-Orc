@@ -72,6 +72,17 @@ The full description is in [docs/interface.md](docs/interface.md); the suites' c
 Requests over loopback need no token. From other machines they need `Authorization: Bearer <token>`;
 GPU-Orc refuses to start on a non-loopback address without a token file.
 
+## Clients for callers
+
+The protocol is written down once per language, in `clients/`, and tested against the real server (`tests/test_client_python.py`, `tests/test_client_js.py`):
+
+- `clients/python/gpu_orc_client.py`: standard library only (`GpuOrc`, `FreeResult.problems()`, `TrafficLight.red`, hold and work calls).
+- `clients/js/gpu-orc-client.js`: no dependencies (`freeForModel`, `loading`), Node 18+.
+
+The programs hold byte-identical copies. `clients/consumers.json` lists them; `python scripts/sync_clients.py` writes them (`--check` changes nothing and exits 1 for a stale or missing copy, `--only NAME` for one program, `--repos DIR` for the folder holding the repos, default: the parent of this one, so a sync can go into worktrees first). Edit the clients only here, never in a copy.
+
+A caller turns GPU-Orc off by leaving its address empty. That decision is made in the caller before it calls the client; the client has no "off" state.
+
 ## Install
 
 Needs Python 3.12 with venv (Debian/Ubuntu: `python3-venv`) and `nvidia-smi`.

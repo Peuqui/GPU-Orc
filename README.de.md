@@ -74,6 +74,17 @@ Freigabe-Schnittstelle der Suiten in [docs/release-api.de.md](docs/release-api.d
 Anfragen über Loopback brauchen kein Token, von anderen Rechnern `Authorization: Bearer <token>`.
 Auf einer Adresse außer Loopback startet GPU-Orc nur mit Token-Datei.
 
+## Clients für Aufrufer
+
+Das Protokoll steht je Sprache einmal in `clients/` und ist gegen den echten Server getestet (`tests/test_client_python.py`, `tests/test_client_js.py`):
+
+- `clients/python/gpu_orc_client.py`: nur Standardbibliothek (`GpuOrc`, `FreeResult.problems()`, `TrafficLight.red`, Freihalten und Arbeitsmeldung).
+- `clients/js/gpu-orc-client.js`: ohne Abhängigkeiten (`freeForModel`, `loading`), Node 18+.
+
+Die Programme tragen byte-genaue Kopien. `clients/consumers.json` listet sie, `python scripts/sync_clients.py` schreibt sie (`--check` ändert nichts und endet mit Exit 1 bei veralteter oder fehlender Kopie, `--only NAME` für ein Programm, `--repos DIR` für den Ordner mit den Repos, Standard: der Elternordner dieses Repos, damit zuerst in Worktrees verteilt werden kann). Die Clients werden nur hier geändert, nie in einer Kopie.
+
+Ein Aufrufer schaltet GPU-Orc ab, indem er die Adresse leer lässt. Diese Entscheidung trifft der Aufrufer, bevor er den Client ruft; der Client kennt keinen Aus-Zustand.
+
 ## Installation
 
 Braucht Python 3.12 mit venv (Debian/Ubuntu: `python3-venv`) und `nvidia-smi`.

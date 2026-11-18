@@ -10,6 +10,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 from gpu_orc.gpus import Gpu
+from gpu_orc.orchestrator import Orchestrator
+from gpu_orc.server import GpuOrcServer
 
 Route = Callable[[Any], tuple[int, Any]]
 
@@ -75,3 +77,16 @@ def answers(*replies: tuple[int, Any]) -> Route:
         return remaining.pop(0) if len(remaining) > 1 else remaining[0]
 
     return route
+
+
+@contextmanager
+def serving(orchestrator: Orchestrator, token: str | None = None, bind: str = "127.0.0.1") -> Iterator[int]:
+    """The real GpuOrcServer in a thread; yields its port."""
+    httpd = GpuOrcServer((bind, 0), orchestrator, token=token)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield int(httpd.server_address[1])
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
