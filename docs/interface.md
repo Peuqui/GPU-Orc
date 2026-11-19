@@ -59,11 +59,13 @@ Errors always come as `{"error": "<text>"}`. An unknown path gives `404`.
 ### `GET /loading` — the traffic light
 
 ```json
-{"loading": ["DeepSeek-V4-Flash-284B-A13B-MXFP4-FP8-DSpark-vllm"], "held": null}
+{"loading": ["DeepSeek-V4-Flash-284B-A13B-MXFP4-FP8-DSpark-vllm"], "held": null, "hold_requested": null}
 ```
 
-Which big models are loading right now, and whether the cards are held (`held`, see `POST /hold`);
-empty and `null` = green. While a model loads, its cards look emptier than
+Which big models are loading right now, and whether the cards are held (`held`, see `POST /hold`, only for an
+ACTIVE hold, so that everybody who reads the light keeps its meaning); `hold_requested` names a hold that waits
+for the work on the cards to end (callers that start new work, like AIfred's turns, wait on it, or a stream of new
+work would postpone the hold for ever; it does not make the light red). Empty and `null` = green. While a model loads, its cards look emptier than
 they are about to be. Whoever wants to put something on a card (STT-Suite, TTS-Suite, AIfred's image
 describer) asks here first and starts nothing on the GPU while there is an entry. The answer comes at once,
 without nvidia-smi and without asking the consumers.
@@ -76,21 +78,49 @@ room, not even when something is cleared for them. If the model server does not 
 ### `POST /hold`, `DELETE /hold` — keeping the cards for somebody
 
 ```json
-{"reason": "gaming"}
+{"owner": "vllm-research", "reason": "gaming"}
 ```
 
-Somebody keeps this machine's cards (a game, other work). GPU-Orc stores the hold in `hold_file` (config,
-default `~/.local/state/gpu-orc/hold.json`; it outlasts a restart of GPU-Orc and of the machine) and then
-clears every card like `POST /free` with `"gpus": "all"`. The answer carries both:
+Somebody keeps this machine's cards (a game, other work). The hold has an `owner` and exists once at a time.
+GPU-Orc stores it in `hold_file` (config, default `~/.local/state/gpu-orc/hold.json`; it outlasts a restart of
+GPU-Orc and of the machine). A hold file of the old format (no owner) keeps GPU-Orc from starting. A body that is
+not exactly `owner` and `reason` (non-empty strings): `400`.
 
-```json
-{"held": {"since": "2026-11-05T09:12:00+01:00", "reason": "gaming"}, "free": {"...": "as POST /free"}}
-```
+- A new hold is REQUESTED (`"state": "requested"`, `"free": null`), and the answer comes at once; nothing is
+  touched yet:
 
-Until `DELETE /hold` (answer `{"held": null}`), `GET /loading` and `GET /status` name the hold, and whoever
-would put something new on a card (a describer of another machine, a TTS container started from there)
-leaves it alone. GPU-Orc ends nothing a caller loads without asking. Holding again keeps the time of the
-first hold and takes the new reason. A body without a non-empty `reason`: `400`.
+  ```json
+  {"hold": {"owner": "vllm-research", "reason": "gaming", "since": "2026-11-05T09:12:00+01:00",
+            "state": "requested", "free": null}}
+  ```
+
+- One thread in GPU-Orc, running as long as the service, makes every change of the hold: at the first moment no
+  work of others (`POST /work`) is left, it clears every card like `POST /free` with `"gpus": "all"` and makes the
+  hold ACTIVE with that clearing in `free` (`{"...": "as POST /free"}`). Without work of others this follows right
+  after the answer. The work of the hold's own owner does not count: use the same owner name for `/work` and
+  `/hold`. `POST /hold` and `DELETE /work/<owner>` wake the thread, and a lease that runs out (the reporter
+  crashed) is found at the moment it expires. Only the very hold the cards were cleared for turns active: released
+  (and maybe requested anew) meanwhile, the clearing counts for nothing and the new hold waits for its own.
+  Nothing clears the cards inside a `GET`. After a start of GPU-Orc a hold that is still requested waits
+  `work_lease_s` (config, default 60 s) before it may activate, so that the renewals of running work come back
+  first. Callers wait for ACTIVE with `hold_and_wait` (clients). Should the thread itself fail outside the
+  clearing (the hold file cannot be written, a bug), GPU-Orc ends with the traceback on stderr instead of
+  answering on with holds that never turn active; the unit's `Restart=on-failure` starts it again.
+- When the clearing ends with a problem (a consumer busy, memory left, or an error while clearing, then one
+  action `gpu-orc` / `all cards` / `error` with the detail), the hold is active anyway and keeps that `free` (also
+  in the hold file and in `GET /status`); nobody retries behind the owner's back.
+- **Asking again** as the same owner changes nothing and returns the current hold. **Another owner** while any hold
+  exists (requested or active): `409`, `{"error": "...", "owner": "<holder>", "state": "...", "since": "..."}`.
+
+`GET /loading` and `GET /status` carry `"held"` (the hold, only while ACTIVE) and `"hold_requested"` (the hold,
+only while REQUESTED). Whoever would put something new on a card (a describer of another machine, a TTS
+container started from there) leaves the cards alone while `held` is set. GPU-Orc ends nothing a caller loads
+without asking.
+
+`DELETE /hold` with `{"owner": "...", "force": false}` lets go (a requested hold is withdrawn); answer
+`{"hold": null}`. Only the owner may: another owner gets `409` (same body as above). `"force": true` lets go of
+the hold of anybody, for the person when a program died holding the cards; GPU-Orc logs it on stderr with both
+owners. `owner` is required also with `force`. Without a hold the answer is `{"hold": null}`.
 
 ### `POST /work`, `GET /work`, `DELETE /work/<owner>` — a job runs here
 
@@ -300,7 +330,7 @@ request; it may change while running.
 - **AIfred** calls GPU-Orc before loading any model since 30 October 2026 (`POST /free {"model": …}`, before a
   calibration the `gpus` form with `keep`), asks the traffic light (`GET /loading`) before its
   image describer or its face detection puts anything on a card, and holds the cards through `POST /hold` /
-  `DELETE /hold` from its status bar. If GPU-Orc does not answer, AIfred loads anyway and says so loudly. With
+  `DELETE /hold` (with its own owner name) from its status bar. If GPU-Orc does not answer, AIfred loads anyway and says so loudly. With
   the Vue rebuild AIfred is also a consumer (`gpu-release`, item `face-worker`, with a token).
 - **Agent-Orc** calls GPU-Orc for backends with local models (the backend's `gpu_orc` field with
   `port`, `model_server` if needed and `token_file` for remote machines). GPU-Orc runs on the model

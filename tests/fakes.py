@@ -81,7 +81,8 @@ def answers(*replies: tuple[int, Any]) -> Route:
 
 @contextmanager
 def serving(orchestrator: Orchestrator, token: str | None = None, bind: str = "127.0.0.1") -> Iterator[int]:
-    """The real GpuOrcServer in a thread; yields its port."""
+    """The real GpuOrcServer in a thread, with the hold worker running as in ``gpu-orc serve``; yields its port."""
+    orchestrator.start_hold_worker()
     httpd = GpuOrcServer((bind, 0), orchestrator, token=token)
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()

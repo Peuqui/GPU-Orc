@@ -26,6 +26,11 @@ free_timeout_s: 180
 # Where the hold of the cards is kept (POST /hold, DELETE /hold); it outlasts a restart.
 # hold_file: ~/.local/state/gpu-orc/hold.json
 
+# The longest ttl callers report work with (POST /work; AIfred: 60 s). Leases live in memory only, so after a
+# start of GPU-Orc a hold that was still requested waits this long before it may clear the cards: the
+# renewals of the work that runs come back first.
+# work_lease_s: 60
+
 consumers:
   # Services with the suites' common release API (GET /gpu/holders, POST /gpu/release).
   - name: stt-suite

@@ -13,6 +13,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 from . import __version__
+from .hold import HoldConflict
 from .orchestrator import FreeRequest, ModelServerUnreachable, NotFound, Orchestrator, RequestError
 
 MAX_BODY_BYTES = 64 * 1024
@@ -60,7 +61,7 @@ class Handler(BaseHTTPRequestHandler):
             parse: Any = parse_free_request
             act: Any = self.server.orchestrator.free
         elif self.path == "/hold":
-            parse, act = parse_hold_request, self.server.orchestrator.hold
+            parse, act = parse_hold_request, lambda request: self.server.orchestrator.hold(*request)
         elif self.path == "/work":
             parse, act = parse_work_request, lambda request: self.server.orchestrator.begin_work(*request)
         else:
@@ -77,7 +78,12 @@ class Handler(BaseHTTPRequestHandler):
         if not self._authorized():
             return
         if self.path == "/hold":
-            self._answer(self.server.orchestrator.release_hold)
+            try:
+                owner, force = parse_release_request(self._json_body())
+            except RequestError as error:
+                self._send(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+                return
+            self._answer(lambda: self.server.orchestrator.release_hold(owner, force))
         elif self.path.startswith(WORK_PATH_PREFIX) and len(self.path) > len(WORK_PATH_PREFIX):
             owner = urllib.parse.unquote(self.path.removeprefix(WORK_PATH_PREFIX))
             self._answer(lambda: self.server.orchestrator.end_work(owner))
@@ -89,6 +95,10 @@ class Handler(BaseHTTPRequestHandler):
             self._send(HTTPStatus.OK, produce())
         except RequestError as error:
             self._send(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+        except HoldConflict as error:
+            self._send(HTTPStatus.CONFLICT, {
+                "error": str(error), "owner": error.hold.owner, "state": error.hold.state, "since": error.hold.since,
+            })
         except NotFound as error:
             self._send(HTTPStatus.NOT_FOUND, {"error": str(error)})
         except ModelServerUnreachable as error:
@@ -137,12 +147,21 @@ def authorization_error(client_ip: str, header: str, token: str | None) -> tuple
     return None
 
 
-def parse_hold_request(body: Any) -> str:
-    """The reason of a ``POST /hold`` (``{"reason": "..."}``): who holds the cards, and why."""
-    if not isinstance(body, dict) or set(body) != {"reason"} or not isinstance(body["reason"], str) \
-            or not body["reason"].strip():
-        raise RequestError('body: {"reason": "<who holds the cards, and why>"}')
-    return body["reason"].strip()
+def parse_hold_request(body: Any) -> tuple[str, str]:
+    """``POST /hold``: ``{"owner": "<who holds the cards>", "reason": "<why>"}``."""
+    if not isinstance(body, dict) or set(body) != {"owner", "reason"} \
+            or not all(isinstance(body[key], str) and body[key].strip() for key in body):
+        raise RequestError('body: {"owner": "<who holds the cards>", "reason": "<why>"}')
+    return body["owner"].strip(), body["reason"].strip()
+
+
+def parse_release_request(body: Any) -> tuple[str, bool]:
+    """``DELETE /hold``: ``{"owner": "<who lets go>", "force": true}``; ``force`` (optional) lets go of a hold of another owner."""
+    if not isinstance(body, dict) or not {"owner"} <= set(body) <= {"owner", "force"} \
+            or not isinstance(body["owner"], str) or not body["owner"].strip() \
+            or not isinstance(body.get("force", False), bool):
+        raise RequestError('body: {"owner": "<who lets go>", "force": <true to let go of the hold of another owner>}')
+    return body["owner"].strip(), body.get("force", False)
 
 
 def parse_work_request(body: Any) -> tuple[str, str, float]:

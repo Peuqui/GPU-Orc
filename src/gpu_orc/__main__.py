@@ -37,9 +37,11 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     orchestrator = Orchestrator(
         config.consumers, config.free_timeout_s, verify_settings=config.verify, load_grace_s=config.load_grace_s,
+        restart_grace_s=config.work_lease_s,
         hold=hold,
         work=WorkStore(),
     )
+    orchestrator.start_hold_worker()
     server = GpuOrcServer((config.host, config.port), orchestrator, config.token)
     names = ", ".join(consumer.name for consumer in config.consumers)
     print(f"gpu-orc listening on {config.host}:{config.port}, consumers: {names}", flush=True)

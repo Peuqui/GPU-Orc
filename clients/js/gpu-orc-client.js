@@ -32,11 +32,19 @@ export async function freeForModel(url, token, model, reason, keep = []) {
   return freeResult(answer);
 }
 
-/** The traffic light: {loading: string[], held: {since, reason}|null, red: boolean}. */
+/**
+ * The traffic light: {loading: string[], held, holdRequested, red: boolean}. `held` is the hold
+ * ({owner, reason, since, state, free}) while it is active, `holdRequested` one that waits for work to end.
+ */
 export async function loading(url, token) {
   const answer = await call(url, token, 'GET', '/loading', QUICK_TIMEOUT_MS);
-  if (!Array.isArray(answer.loading) || !('held' in answer)) throw new GpuOrcError('GPU-Orc /loading has an unknown form');
-  return { loading: answer.loading, held: answer.held, red: answer.loading.length > 0 || answer.held !== null };
+  if (!Array.isArray(answer.loading) || !('held' in answer) || !('hold_requested' in answer)) {
+    throw new GpuOrcError('GPU-Orc /loading has an unknown form');
+  }
+  return {
+    loading: answer.loading, held: answer.held, holdRequested: answer.hold_requested,
+    red: answer.loading.length > 0 || answer.held !== null,
+  };
 }
 
 function freeResult(answer) {

@@ -66,3 +66,8 @@ def test_rejected_consumers(tmp_path: Path, consumers: list[dict[str, Any]], mes
 def test_a_port_is_no_boolean(tmp_path: Path) -> None:
     with pytest.raises(ConfigError, match="wrong type"):
         load_config(write(tmp_path, {"listen": {"port": True}, "consumers": CONSUMERS}))
+
+
+def test_work_lease_defaults_to_the_usual_ttl_and_can_be_set(tmp_path: Path) -> None:
+    assert load_config(write(tmp_path, {"consumers": CONSUMERS})).work_lease_s == 60.0
+    assert load_config(write(tmp_path, {"consumers": CONSUMERS, "work_lease_s": 120})).work_lease_s == 120.0

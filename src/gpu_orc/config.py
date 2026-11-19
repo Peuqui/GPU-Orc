@@ -20,6 +20,8 @@ from .verify import DEFAULT_VERIFY, VerifySettings
 
 DEFAULT_PORT = 5070
 DEFAULT_FREE_TIMEOUT_S = 180.0
+# The longest ttl a caller reports work with (AIfred: 60 s): a requested hold found at start waits that long.
+DEFAULT_WORK_LEASE_S = 60.0
 
 
 class ConfigError(ValueError):
@@ -36,6 +38,7 @@ class Config:
     verify: VerifySettings
     consumers: tuple[Consumer, ...]
     hold_file: Path
+    work_lease_s: float
 
 
 def load_config(path: Path) -> Config:
@@ -65,7 +68,8 @@ def load_config(path: Path) -> Config:
     if len(set(names)) != len(names):
         raise ConfigError(f"consumers: names must be unique, got {names}")
     hold_file = Path(_get(data, "hold_file", str, "config", str(DEFAULT_HOLD_FILE))).expanduser()
-    return Config(host, port, token, free_timeout_s, load_grace_s, verify, consumers, hold_file)
+    work_lease_s = float(_get(data, "work_lease_s", (int, float), "config", DEFAULT_WORK_LEASE_S))
+    return Config(host, port, token, free_timeout_s, load_grace_s, verify, consumers, hold_file, work_lease_s)
 
 
 def _consumer(entry: Mapping[str, Any]) -> Consumer:

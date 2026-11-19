@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
+import os
+import sys
 import threading
 import time
+import traceback
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Literal, NoReturn
 
 from .gate import FifoGate
 from .gpus import Gpu, GpuSpecError, query_gpus, resolve_gpu
-from .hold import HoldStore
+from .hold import ACTIVE, REQUESTED, Hold, HoldStore
 from .model import Action, Consumer, ConsumerError, Holder, ModelServer, UnknownModel
 from .verify import DEFAULT_VERIFY, StillHeld, VerifySettings, verify
 from .work import WorkStore
@@ -58,12 +61,19 @@ class Orchestrator:
         query: Callable[[], list[Gpu]] = query_gpus,
         verify_settings: VerifySettings = DEFAULT_VERIFY,
         load_grace_s: float = DEFAULT_LOAD_GRACE_S,
+        restart_grace_s: float = 0.0,
         *,
         hold: HoldStore,
         work: WorkStore,
     ) -> None:
         self._consumers = {consumer.name: consumer for consumer in consumers}
         self._hold = hold
+        self._hold_worker: threading.Thread | None = None
+        self._hold_wake = threading.Event()
+        # Leases live in memory only: after a start, the renewals of running work come back within one
+        # lease before a hold that was requested earlier may clear the cards.
+        requested_at_start = (current := hold.get()) is not None and current.state == REQUESTED
+        self._hold_not_before_s = time.monotonic() + restart_grace_s if requested_at_start else 0.0
         self._work = work
         self._load_grace_s = load_grace_s
         self._announced: dict[str, float] = {}  # model -> time.monotonic() until it counts as loading
@@ -86,22 +96,85 @@ class Orchestrator:
         state = self._gate.state()
         return {
             "queue": {"running": state.running, "waiting": state.waiting, "running_since_s": state.running_since_s},
-            "held": self._held_json(),
+            **self._hold_light(),
             "work": self._work.active(),
             **self._status_body(gpus, self._collect(gpus), [gpu.uuid for gpu in gpus]),
         }
 
-    def hold(self, reason: str) -> dict[str, Any]:
-        """Hold the cards for somebody (hold.py) and clear every card at once; the answer carries the
-        hold and the /free of all cards."""
-        hold = self._hold.set(reason)
-        freed = self.free(FreeRequest(reason=f"hold: {reason}", gpus="all"))
-        return {"held": hold.as_json(), "free": freed}
+    def hold(self, owner: str, reason: str) -> dict[str, Any]:
+        """``owner`` asks to keep the cards (hold.py). A new hold is only requested; the hold worker clears
+        the cards and makes it active once no work of others runs on them (callers wait with
+        ``hold_and_wait``). Asking again as the same owner answers the hold as it is; another owner is
+        refused (HoldConflict) while any hold exists."""
+        hold = self._hold.request(owner, reason)
+        self._hold_wake.set()
+        return {"hold": hold.as_json()}
 
-    def release_hold(self) -> dict[str, Any]:
-        """Let go of the cards: new things may go on them again."""
-        self._hold.clear()
-        return {"held": None}
+    def start_hold_worker(self) -> None:
+        """Start the one thread that turns a requested hold into an active one, for the life of the
+        service. A hold found at start (requested before a restart) waits for its moment the same way."""
+        if self._hold_worker is not None:
+            raise RuntimeError("the hold worker runs already")
+        self._hold_worker = threading.Thread(target=self._run_hold_worker, name="hold-worker", daemon=True)
+        self._hold_worker.start()
+
+    def _run_hold_worker(self) -> None:
+        """Only this thread clears the cards for a hold, so there are never two clearings, and a hold
+        never waits for a thread that is about to end. It sleeps until the next lease runs out (a lease
+        that expires is no event, nobody calls GPU-Orc then) or until ``hold`` or ``end_work`` wakes it.
+        The wake is cleared before each look, so a wake during the look or the clearing is not lost.
+        Should it fail (writing the hold file, a bug), every hold would stay requested for ever while the
+        service answers on: it ends the service loudly instead, systemd starts it again (Restart=on-failure)."""
+        try:
+            while True:
+                self._hold_wake.clear()
+                self._hold_wake.wait(self._settle_hold())
+        except Exception:  # noqa: BLE001 — the only thread that activates holds died, the service must not live on
+            print(f"[hold] the hold worker failed, GPU-Orc ends:\n{traceback.format_exc()}", file=sys.stderr, flush=True)
+            _end_process(1)
+
+    def _settle_hold(self) -> float | None:
+        """One look at the hold: clear the cards for a requested hold that nothing blocks, and make
+        that very hold active with the result, however it ended (nobody retries behind the owner's
+        back), so whoever sees ``active`` finds the cards cleared or the reason why not. Returns how
+        long to sleep: the seconds until a blocker may be gone, None until somebody wakes the worker."""
+        hold = self._hold.get()
+        if hold is None or hold.state != REQUESTED:
+            return None
+        blocked_for_s = self._blocked_for_s(hold)
+        if blocked_for_s is not None:
+            return blocked_for_s
+        if self._hold.activate(hold, self._clear_all_cards(hold.reason)) is None:
+            print(f"[hold] the hold of {hold.owner!r} was released while the cards were cleared for it",
+                  file=sys.stderr, flush=True)
+        return None
+
+    def _blocked_for_s(self, hold: Hold) -> float | None:
+        """Seconds until the earliest moment the hold may be unblocked; None when nothing blocks it. The
+        work of the owner itself does not count (it works on the cards it holds)."""
+        grace = self._hold_not_before_s - time.monotonic()
+        waits = [wait for wait in (grace if grace > 0 else None, self._work.blocking_for_s(hold.owner))
+                 if wait is not None]
+        return min(waits) if waits else None
+
+    def _clear_all_cards(self, reason: str) -> dict[str, Any]:
+        # Besides nvidia-smi, a consumer's answer of an unexpected form raises (KeyError, TypeError,
+        # AttributeError while reading it); the worker must outlive it, or the hold stays requested unseen.
+        try:
+            return self.free(FreeRequest(reason=f"hold: {reason}", gpus="all"))
+        except Exception as error:  # noqa: BLE001 — boundary of the hold worker, the failure goes into the hold
+            print(f"[hold] clearing the cards failed:\n{traceback.format_exc()}", file=sys.stderr, flush=True)
+            failure = Action("gpu-orc", "all cards", "error", f"clearing failed: {error!r}")
+            return {"free": False, "already_running": False, "actions": [_action_json(failure)]}
+
+    def release_hold(self, owner: str, force: bool) -> dict[str, Any]:
+        """The owner lets go of the cards (a hold that is only requested is withdrawn). ``force`` lets
+        go whoever holds them: for the person, when a program died holding the cards."""
+        released = self._hold.release(owner, force)
+        if released is not None and released.owner != owner:
+            print(f"[hold] FORCED RELEASE by {owner!r} of the hold of {released.owner!r} "
+                  f"({released.state}, {released.reason!r}, since {released.since})", file=sys.stderr, flush=True)
+        return {"hold": None}
 
     def begin_work(self, owner: str, reason: str, ttl_s: float) -> dict[str, Any]:
         """Somebody reports a job on this machine (work.py); reporting again renews the lease."""
@@ -110,15 +183,21 @@ class Orchestrator:
 
     def end_work(self, owner: str) -> dict[str, Any]:
         ended = self._work.end(owner)
+        self._hold_wake.set()  # a requested hold may be waiting for exactly this
         return {"ended": ended, "work": self._work.active()}
 
     def work(self) -> dict[str, Any]:
         """The jobs reported right now; answers at once, without nvidia-smi and without asking the consumers."""
         return {"work": self._work.active()}
 
-    def _held_json(self) -> dict[str, str] | None:
+    def _hold_light(self) -> dict[str, Any]:
+        """``held`` only for an ACTIVE hold, so that everybody who reads the light keeps its meaning;
+        a requested hold is ``hold_requested`` (whoever starts new work waits on it)."""
         hold = self._hold.get()
-        return hold.as_json() if hold else None
+        return {
+            "held": _hold_json(hold, ACTIVE),
+            "hold_requested": _hold_json(hold, REQUESTED),
+        }
 
     def loading(self) -> dict[str, Any]:
         """The traffic light: which big models are loading, and whether the cards are held. While a model
@@ -134,7 +213,7 @@ class Orchestrator:
                     models.update(server.loading())
                 except ConsumerError as error:
                     raise ModelServerUnreachable(str(error)) from error
-        return {"loading": sorted(models), "held": self._held_json()}
+        return {"loading": sorted(models), **self._hold_light()}
 
     def _announce(self, model: str, until: float) -> None:
         with self._announced_lock:
@@ -359,6 +438,15 @@ class Orchestrator:
             "gpus": [_gpu_json(gpu, report.holders) for gpu in gpus if gpu.uuid in uuids],
             "errors": report.errors,
         }
+
+
+def _end_process(code: int) -> NoReturn:
+    """End the whole service at once from a thread other than the main one (``sys.exit`` would end only it)."""
+    os._exit(code)
+
+
+def _hold_json(hold: Hold | None, state: str) -> dict[str, Any] | None:
+    return hold.as_json() if hold is not None and hold.state == state else None
 
 
 def _unkept_errors(report: _Report, keep: Sequence[str]) -> list[dict[str, str]]:

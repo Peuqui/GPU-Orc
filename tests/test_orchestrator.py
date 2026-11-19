@@ -115,11 +115,12 @@ def server(*held: Holder, machine: Machine | None = None, **kwargs: Any) -> Fake
 
 def make(
     *consumers: Consumer, machine: Machine | None = None, timeout: float = 30.0, load_grace_s: float = 15.0,
+    work: WorkStore | None = None, hold_file: Path | None = None, restart_grace_s: float = 0.0,
 ) -> Orchestrator:
     query = machine.query if machine is not None else lambda: list(GPUS)
-    hold = HoldStore(Path(tempfile.mkdtemp()) / "hold.json")
-    return Orchestrator(consumers, timeout, query=query, verify_settings=FAST, load_grace_s=load_grace_s, hold=hold,
-                        work=WorkStore())
+    hold = HoldStore(hold_file or Path(tempfile.mkdtemp()) / "hold.json")
+    return Orchestrator(consumers, timeout, query=query, verify_settings=FAST, load_grace_s=load_grace_s,
+                        restart_grace_s=restart_grace_s, hold=hold, work=work or WorkStore())
 
 
 def outcomes(result: dict[str, Any]) -> list[tuple[str, str, str]]:
@@ -347,8 +348,8 @@ def test_status_attributes_memory_only_where_reported() -> None:
 
 
 def test_loading_names_what_the_model_server_is_loading() -> None:
-    assert make(server(starting=("big",))).loading() == {"loading": ["big"], "held": None}
-    assert make(server()).loading() == {"loading": [], "held": None}
+    assert make(server(starting=("big",))).loading() == {"loading": ["big"], "held": None, "hold_requested": None}
+    assert make(server()).loading() == {"loading": [], "held": None, "hold_requested": None}
 
 
 def test_a_model_counts_as_loading_from_the_free_that_clears_for_it() -> None:
@@ -357,18 +358,18 @@ def test_a_model_counts_as_loading_from_the_free_that_clears_for_it() -> None:
     orchestrator = make(slow, server(machine=m), machine=m, load_grace_s=0.3)
     worker = in_background(orchestrator, FreeRequest(reason="load", model="big"))
     time.sleep(0.2)
-    assert orchestrator.loading() == {"loading": ["big"], "held": None}  # still clearing, the server knows nothing yet
+    assert orchestrator.loading() == {"loading": ["big"], "held": None, "hold_requested": None}  # still clearing, the server knows nothing yet
     worker.join()
-    assert orchestrator.loading() == {"loading": ["big"], "held": None}  # cleared, the load is about to start
+    assert orchestrator.loading() == {"loading": ["big"], "held": None, "hold_requested": None}  # cleared, the load is about to start
     time.sleep(0.4)
-    assert orchestrator.loading() == {"loading": [], "held": None}  # nobody loaded it after all
+    assert orchestrator.loading() == {"loading": [], "held": None, "hold_requested": None}  # nobody loaded it after all
 
 
 def test_a_dry_run_and_a_running_model_announce_nothing() -> None:
     orchestrator = make(server(model("big", A, B)))
     orchestrator.free(FreeRequest(reason="load", model="big"))
     orchestrator.free(FreeRequest(reason="look", model="elsewhere", dry_run=True))
-    assert orchestrator.loading() == {"loading": [], "held": None}
+    assert orchestrator.loading() == {"loading": [], "held": None, "hold_requested": None}
 
 
 def test_a_model_server_that_does_not_answer_is_no_green_light() -> None:
@@ -379,5 +380,5 @@ def test_a_model_server_that_does_not_answer_is_no_green_light() -> None:
 def test_clearing_for_a_helper_leaves_the_light_green() -> None:
     orchestrator = make(server(helpers=("small-vlm",)))
     orchestrator.free(FreeRequest(reason="describer", model="small-vlm"))
-    assert orchestrator.loading() == {"loading": [], "held": None}
+    assert orchestrator.loading() == {"loading": [], "held": None, "hold_requested": None}
 
