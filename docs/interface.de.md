@@ -61,11 +61,12 @@ Fehler kommen immer als `{"error": "<text>"}`. Ein unbekannter Pfad ergibt `404`
 ### `GET /loading` — die Ampel
 
 ```json
-{"loading": ["DeepSeek-V4-Flash-284B-A13B-MXFP4-FP8-DSpark-vllm"], "held": null}
+{"loading": ["DeepSeek-V4-Flash-284B-A13B-MXFP4-FP8-DSpark-vllm"], "held": null, "hold_requested": null}
 ```
 
-Welche großen Modelle gerade laden und ob die Karten freigehalten werden (`held`, siehe `POST /hold`);
-leer und `null` = grün. Während ein Modell lädt, sehen seine Karten leerer aus,
+Welche großen Modelle gerade laden und ob die Karten freigehalten werden (`held`, siehe `POST /hold`, nur für einen
+AKTIVEN Halt); `hold_requested` nennt einen Halt, der darauf wartet, dass die Karten frei werden (wer selbst ein
+Hauptmodell laden will, behandelt ihn wie `held`; er macht die Ampel nicht rot); leer und `null` = grün. Während ein Modell lädt, sehen seine Karten leerer aus,
 als sie gleich sind. Wer etwas auf eine Karte legen will (STT-Suite, TTS-Suite, AIfreds Bildbeschreiber),
 fragt hier vorher und startet bei einem Eintrag nichts auf der GPU. Die Antwort kommt sofort, ohne
 nvidia-smi und ohne die Verbraucher zu fragen.
@@ -75,26 +76,82 @@ Modellserver davon weiß, und noch `load_grace_s` (Config, Standard 15 s) nach d
 danach sagt es der Modellserver selbst (`starting`). Seine persistenten Hilfsmodelle zählen nicht, die
 laden auf ihren eigenen Platz, auch nicht, wenn für sie geräumt wird. Antwortet der Modellserver nicht: `502`. Das ist keine grüne Ampel.
 
-### `POST /hold`, `DELETE /hold` — Karten für jemanden freihalten
+### `POST /hold`, `POST /hold/grant`, `DELETE /hold` — Karten für jemanden freihalten
 
 ```json
-{"reason": "Spielen"}
+{"owner": "vllm-research", "reason": "Spielen", "model": null}
 ```
 
-Jemand hält die Karten dieses Rechners für sich frei (ein Spiel, andere Arbeit). GPU-Orc legt den Halt in
-`hold_file` ab (Config, Standard `~/.local/state/gpu-orc/hold.json`; er übersteht einen Neustart von GPU-Orc
-und des Rechners) und räumt danach alle Karten wie `POST /free` mit `"gpus": "all"`. Die Antwort enthält
-beides:
+Jemand hält die Karten dieses Rechners für sich frei (ein Spiel, andere Arbeit). Der Halt hat einen `owner`, und es
+gibt immer nur einen. GPU-Orc legt ihn in `hold_file` ab (Config, Standard `~/.local/state/gpu-orc/hold.json`; er
+übersteht einen Neustart von GPU-Orc und des Rechners). Eine Hold-Datei älteren Formats (ohne `model`,
+`model_server`, `granted_by`) verhindert den Start von GPU-Orc; es gibt keine Migration, die Datei wird entfernt.
 
-```json
-{"held": {"since": "2026-11-05T09:12:00+01:00", "reason": "Spielen"}, "free": {"...": "wie POST /free"}}
-```
+Body: genau `owner` und `reason` (nicht leere Strings) und `model`, als Schlüssel Pflicht. `model` ist ein Modell
+des Modellservers (llama-swap), das der Eigentümer braucht und das geladen bleiben muss, oder ausdrücklich `null`
+(er braucht keins, z. B. ein Spiel). Das Modell wird beim Anfordern wie bei `POST /free` geprüft: unbekannt `400`.
+`model_server` (optional, nur mit einem Modell) nennt den Modellserver nach derselben Regel wie bei `POST /free`:
+nur nötig, wenn mehrere Modellserver konfiguriert sind. Der Halt speichert `model` und den aufgelösten
+`model_server` (`null` ohne Modell). Jeder andere Body: `400`.
 
-Bis `DELETE /hold` (Antwort `{"held": null}`) nennen `GET /loading` und `GET /status` den Halt, und wer
-etwas Neues auf eine Karte legen würde (ein Bildbeschreiber eines anderen Rechners, ein TTS-Container, der
-von dort gestartet wird), lässt sie in Ruhe. Was ein Aufrufer lädt, ohne zu fragen, beendet GPU-Orc nicht.
-Ein zweiter Halt behält die Zeit des ersten und übernimmt den neuen Grund. Ein Body ohne nicht-leeren
-`reason`: `400`.
+- Ein neuer Halt ist ANGEFORDERT (`"state": "requested"`, `"free": null`, `"granted_by": null`), die Antwort kommt
+  sofort und zeigt den Zustand zu diesem Zeitpunkt; angefasst wird noch nichts:
+
+  ```json
+  {"hold": {"owner": "vllm-research", "reason": "Spielen", "model": null, "model_server": null,
+            "since": "2026-11-05T09:12:00+01:00", "state": "requested", "free": null, "granted_by": null}}
+  ```
+
+- **Die Karten sind frei**, wenn auf keinem Modellserver ein Hauptmodell geladen ist oder lädt. Ein Hauptmodell ist
+  ein Modell des Modellservers, das nicht persistent ist, außer dem Modell, das der Halt selbst anfordert (gleicher
+  Server und Name; als ladend zählt nur ein anderes Modell). Persistente Hilfsmodelle und alle anderen Verbraucher
+  (STT-Suite, TTS-Suite, AIfred) zählen nicht, das Räumen nimmt sie mit. Antwortet ein Modellserver (oder nvidia-smi)
+  nicht, gilt das als nicht frei; GPU-Orc meldet es je Wechsel einmal auf stderr, nicht bei jedem Blick.
+- Ein Thread in GPU-Orc, der so lange läuft wie der Dienst, macht jede Änderung des Halts. Bei einem angeforderten
+  Halt prüft er, ob die Karten frei sind: sofort nach dem Anfordern (ein neuer Halt auf freien Karten wird gleich
+  nach der Antwort wirksam) und dann alle `hold_check_interval_s` (Config, Standard 30 s). `POST /hold`, `POST
+  /hold/grant` und `DELETE /work/<owner>` wecken ihn. Sind die Karten frei, räumt er alle Karten wie `POST /free`
+  mit `"gpus": "all"`, `keep` auf das angeforderte Modell (ein laufendes angefordertes Modell bleibt, im Ergebnis
+  `kept`) und dem Grund `hold: <owner>: <reason>` und macht den Halt AKTIV, mit dem Räumen in `free` (`{"...": "wie
+  POST /free"}`). Nur genau der Halt, für den geräumt wurde, wird aktiv: wurde er unterdessen aufgehoben (und
+  vielleicht neu angefordert), zählt das Räumen für nichts, und der neue Halt wartet auf sein eigenes. In einem
+  `GET` räumt nichts. Gemeldete Arbeit (`POST /work`) beeinflusst einen nicht freigegebenen Halt nicht. Aufrufer
+  warten auf AKTIV mit `hold_and_wait` (Clients). Scheitert der Thread selbst außerhalb des Räumens (die Hold-Datei
+  lässt sich nicht schreiben, ein Fehler), beendet sich GPU-Orc mit dem Traceback auf stderr, statt weiter zu
+  antworten, während Halte nie aktiv werden; `Restart=on-failure` der Unit startet ihn neu.
+- Ein nur ANGEFORDERTER Halt verweigert für sich niemanden: das Hauptmodell, das ihn aufhält, läuft weiter, und was
+  ihm dient, darf noch laden. Wer für sich etwas Großes laden würde (eine Agent-Orc-Sitzung), behandelt
+  `hold_requested` wie `held`. Was in den Sekunden zwischen „Karten frei“ und AKTIV startet, während geräumt wird,
+  bleibt auf den Karten: eine bekannte Lücke, kurz von Natur aus.
+- Endet das Räumen mit einem Problem (ein Verbraucher beschäftigt, Speicher übrig oder ein Fehler beim Räumen, dann
+  eine Aktion `gpu-orc` / `all cards` / `error` mit dem Detail), ist der Halt trotzdem aktiv und behält dieses
+  `free` (auch in der Hold-Datei und in `GET /status`); hinter dem Rücken des Eigentümers versucht niemand es neu.
+- **Erneutes Anfordern** durch denselben Eigentümer ändert nichts und gibt den bestehenden Halt zurück, auch wenn
+  `reason` oder `model` abweichen. **Ein anderer Eigentümer**, solange irgendein Halt besteht (angefordert oder
+  aktiv): `409`, `{"error": "...", "owner": "<Halter>", "state": "...", "since": "..."}`.
+
+`POST /hold/grant` mit `{"owner": "<Eigentümer des Halts>", "by": "<wer freigibt>"}` (beides nicht leere Strings) ist
+der Klick des Menschen, der die Karten trotz geladenem Hauptmodell räumt. Kein Halt: `404`. Halt eines anderen
+Eigentümers: `409` (gleicher Rumpf wie oben). Ein Halt, der schon aktiv ist: `200`, der Halt unverändert. Sonst
+gilt genau dieser Halt als freigegeben: `"granted_by": "<by>"`, in der Hold-Datei (die Freigabe übersteht einen
+Neustart; ein aufgehobener und neu angeforderter Halt beginnt mit `granted_by` `null`), der Thread wird geweckt,
+GPU-Orc schreibt `[hold] GRANTED by <by> for <owner> (...)` auf stderr, und die Antwort ist `{"hold": {...}}`
+(noch angefordert). Der Thread räumt einen freigegebenen Halt, ohne zu prüfen, ob die Karten frei sind, aber erst,
+wenn keine Arbeit eines anderen als des Eigentümers gemeldet ist (`POST /work`): eine laufende Antwort von AIfred
+wird nie abgebrochen, auch nicht durch einen Klick; `DELETE /work/<owner>` weckt den Thread, sonst schaut er alle
+`hold_check_interval_s` nach. Die Arbeit des Eigentümers selbst zählt nicht, deshalb für `/work` und `/hold`
+**denselben Eigentümernamen** benutzen.
+
+`GET /loading` und `GET /status` tragen `"held"` (der Halt, nur solange AKTIV) und `"hold_requested"` (der Halt, nur
+solange ANGEFORDERT, mit `granted_by`). Wer etwas Neues auf eine Karte legen würde (ein Bildbeschreiber eines anderen
+Rechners, ein von dort gestarteter TTS-Container), lässt sie in Ruhe, solange `held` gesetzt ist. Was ein Aufrufer
+lädt, ohne zu fragen, beendet GPU-Orc nicht.
+
+`DELETE /hold` mit `{"owner": "...", "force": false}` gibt frei (ein angeforderter Halt wird zurückgezogen);
+Antwort `{"hold": null}`. Nur der Eigentümer darf: ein anderer bekommt `409` (gleicher Rumpf wie oben).
+`"force": true` hebt den Halt von irgendwem auf, für den Menschen, wenn ein Programm die Karten haltend gestorben
+ist; GPU-Orc protokolliert es auf stderr mit beiden Eigentümern. `owner` ist auch mit `force` Pflicht. Ohne Halt
+ist die Antwort `{"hold": null}`.
 
 ### `POST /work`, `GET /work`, `DELETE /work/<owner>` — hier läuft ein Job
 

@@ -60,11 +60,8 @@ class WorkStore:
     def _drop_expired(self, now: float) -> None:
         self._work = {owner: work for owner, work in self._work.items() if work.expires_s > now}
 
-    def blocking_for_s(self, excluding_owner: str) -> float | None:
-        """Seconds until the first lease of anybody but ``excluding_owner`` runs out (it may be renewed
-        before); None when there is no such lease."""
+    def others_running(self, owner: str) -> bool:
+        """Whether work of anybody but ``owner`` is reported (the work of ``owner`` runs on the cards it holds)."""
         with self._lock:
-            now = self._clock()
-            self._drop_expired(now)
-            ends = [work.expires_s - now for owner, work in self._work.items() if owner != excluding_owner]
-            return min(ends) if ends else None
+            self._drop_expired(self._clock())
+            return any(work_owner != owner for work_owner in self._work)

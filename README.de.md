@@ -27,13 +27,17 @@ Karten freiräumt, statt dass jeder Aufrufer eine eigene Kopie dieser Logik mitb
     (ihre `hosts`). Die Suite meldet sie (`GET /engines`) und stoppt sie (`POST /release`). GPU-Orc
     schickt das Token der Suite mit, wartet bis zu `busy_wait_s` auf eine Vorlesung, die einen Container
     hält, und zählt einen laufenden Container auf alle Karten (die Suite sagt nicht, auf welcher er liegt).
-- **Karten freihalten:** `POST /hold {"owner", "reason"}` hält die Karten dieses Rechners für jemanden frei (ein
-  Spiel, andere Arbeit); es gibt immer nur einen Halt, nur sein Eigentümer gibt ihn frei (`DELETE /hold
+- **Karten freihalten:** `POST /hold {"owner", "reason", "model"}` hält die Karten dieses Rechners für jemanden
+  frei (ein Spiel, andere Arbeit); `model` ist das Modell des Modellservers, das der Eigentümer braucht (es bleibt
+  geladen), oder `null`. Es gibt immer nur einen Halt, nur sein Eigentümer gibt ihn frei (`DELETE /hold
   {"owner"}`; `"force": true` für den Menschen, wird laut protokolliert). Ein neuer Halt ist zuerst angefordert,
-  die Antwort kommt sofort; ein Thread in GPU-Orc räumt die Karten und macht ihn aktiv, sobald keine fremde Arbeit
-  mehr läuft (ohne fremde Arbeit gleich, sonst wenn die letzte endet oder ihre Lease abläuft; nach einem Neustart
-  erst nach `work_lease_s`). Aufrufer warten darauf mit `hold_and_wait`. Die Arbeit des Eigentümers selbst zählt nicht: für `/work` und `/hold` **denselben
-  Eigentümernamen** benutzen. Solange der Halt aktiv ist, melden `GET /loading` (`held`) und `GET /status` ihn,
+  die Antwort kommt sofort; ein Thread in GPU-Orc räumt die Karten und macht ihn aktiv, sobald auf keinem
+  Modellserver mehr ein Hauptmodell geladen ist oder lädt (sind sie frei, gleich, sonst prüft er alle
+  `hold_check_interval_s` erneut). Ein Mensch kann einen wartenden Halt freigeben (`POST /hold/grant {"owner",
+  "by"}`): Er räumt dann trotz geladenem Hauptmodell, aber erst, wenn keine Arbeit anderer gemeldet ist (`/work`),
+  eine laufende Antwort wird also nie abgebrochen; die Freigabe steht in der Hold-Datei und übersteht einen
+  Neustart. Aufrufer warten darauf mit `hold_and_wait`. Die Arbeit des Eigentümers selbst zählt nicht: für
+  `/work` und `/hold` **denselben Eigentümernamen** benutzen. Solange der Halt aktiv ist, melden `GET /loading` (`held`) und `GET /status` ihn,
   und Aufrufer, die etwas starten würden, legen nichts Neues auf die Karten; ein angeforderter Halt steht als
   `hold_requested` da. Der Halt liegt in `hold_file` und übersteht einen Neustart; was ein Aufrufer lädt, ohne
   zu fragen, beendet GPU-Orc nicht.
@@ -59,7 +63,8 @@ Karten freiräumt, statt dass jeder Aufrufer eine eigene Kopie dieser Logik mitb
 | `GET /loading` | welche großen Modelle gerade laden, ob die Karten freigehalten werden (`held`) oder ein Halt wartet (`hold_requested`), für alle, die etwas auf einer Karte starten wollen |
 | `GET /status` | je Karte: Speicher, Halter, nicht zugeordneter Speicher; die Schlange; Verbraucher, die nichts melden konnten |
 | `POST /free` | Karten freiräumen: `{"gpus": [0, "GPU-…"] \| "all", ...}` oder `{"model": "<name>", ...}` |
-| `POST /hold` | Karten für jemanden freihalten: `{"owner": "...", "reason": "..."}`; antwortet sofort mit dem angeforderten Halt, der aktiv wird, sobald keine fremde Arbeit mehr läuft; anderer Eigentümer: 409 |
+| `POST /hold` | Karten für jemanden freihalten: `{"owner": "...", "reason": "...", "model": "..." oder null}`; antwortet sofort mit dem angeforderten Halt, der aktiv wird, sobald kein Hauptmodell mehr geladen ist oder lädt (das angeforderte Modell darf laufen); anderer Eigentümer: 409 |
+| `POST /hold/grant` | ein Mensch gibt einen wartenden Halt frei: `{"owner": "...", "by": "..."}`; er räumt, sobald keine Arbeit anderer läuft; kein Halt: 404, anderer Eigentümer: 409 |
 | `DELETE /hold` | der Eigentümer gibt frei: `{"owner": "...", "force": false}`; anderer Eigentümer: 409, `"force": true` übergeht das |
 | `GET /work` | die Jobs, die gerade gemeldet sind (antwortet sofort) |
 | `POST /work` | einen Job melden oder seine Lease erneuern: `{"owner": "...", "reason": "...", "ttl_s": 60}` |
@@ -84,7 +89,7 @@ Auf einer Adresse außer Loopback startet GPU-Orc nur mit Token-Datei.
 
 Das Protokoll steht je Sprache einmal in `clients/` und ist gegen den echten Server getestet (`tests/test_client_python.py`, `tests/test_client_js.py`):
 
-- `clients/python/gpu_orc_client.py`: nur Standardbibliothek (`GpuOrc`, `FreeResult.problems()`, `TrafficLight.red`, `hold`, `hold_and_wait`, `release_hold`, Arbeitsmeldung).
+- `clients/python/gpu_orc_client.py`: nur Standardbibliothek (`GpuOrc`, `FreeResult.problems()`, `TrafficLight.red`, `hold`, `grant_hold`, `hold_and_wait`, `release_hold`, Arbeitsmeldung).
 - `clients/js/gpu-orc-client.js`: ohne Abhängigkeiten (`freeForModel`, `loading` mit `held` und `holdRequested`), Node 18+.
 
 Die Programme tragen byte-genaue Kopien. `clients/consumers.json` listet sie, `python scripts/sync_clients.py` schreibt sie (`--check` ändert nichts und endet mit Exit 1 bei veralteter oder fehlender Kopie, `--only NAME` für ein Programm, `--repos DIR` für den Ordner mit den Repos, Standard: der Elternordner dieses Repos, damit zuerst in Worktrees verteilt werden kann). Die Clients werden nur hier geändert, nie in einer Kopie.

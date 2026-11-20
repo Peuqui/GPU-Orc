@@ -1,8 +1,9 @@
 """The hold: somebody keeps this machine's cards for themselves (a game, other work) until they let go.
 
-A hold has an owner and one of two states. REQUESTED: somebody asked for the cards (``POST /hold``); nothing
-is touched yet. ACTIVE: the hold worker of the orchestrator cleared the cards once no work of others ran on them
-any more, and ``GET /loading`` says so, so the callers that would put something new on the cards (a describer
+A hold has an owner, the model it needs (a model of the model server, or none) and one of two states.
+REQUESTED: somebody asked for the cards (``POST /hold``); nothing is touched yet. ACTIVE: the hold worker of the
+orchestrator cleared the cards once no main model was loaded or loading on any model server any more (or the
+person granted the hold, ``POST /hold/grant``), and ``GET /loading`` says so, so the callers that would put something new on the cards (a describer
 of another machine, a TTS container started from elsewhere) leave them alone. GPU-Orc ends nothing itself:
 what a caller loads without asking still loads. Only one hold exists at a time. The hold lives in a file, so
 it outlasts a restart of GPU-Orc and of the machine; only ``DELETE /hold`` ends it.
@@ -43,13 +44,17 @@ STATES: tuple[HoldState, ...] = (REQUESTED, ACTIVE)
 class Hold:
     owner: str
     reason: str
+    model: str | None  # the model of the model server the owner needs; it keeps running when the cards are cleared
+    model_server: str | None  # the model server ``model`` belongs to; None exactly when ``model`` is None
     since: str  # ISO 8601 with the offset of the machine
     state: HoldState
     free: dict[str, Any] | None = None  # the /free that cleared the cards, as it ended; None while requested
+    granted_by: str | None = None  # who granted the requested hold by hand (``POST /hold/grant``); None if nobody
 
     def as_json(self) -> dict[str, Any]:
         return {
-            "owner": self.owner, "reason": self.reason, "since": self.since, "state": self.state, "free": self.free,
+            "owner": self.owner, "reason": self.reason, "model": self.model, "model_server": self.model_server,
+            "since": self.since, "state": self.state, "free": self.free, "granted_by": self.granted_by,
         }
 
 
@@ -65,13 +70,13 @@ class HoldStore:
         with self._lock:
             return self._hold
 
-    def request(self, owner: str, reason: str) -> Hold:
-        """A new hold of ``owner`` in the state REQUESTED, or its hold as it is when it has one already.
-        Raises HoldConflict when somebody else holds the cards."""
+    def request(self, owner: str, reason: str, model: str | None, model_server: str | None) -> Hold:
+        """A new hold of ``owner`` in the state REQUESTED, or its hold as it is when it has one already (even
+        when ``reason`` or ``model`` differ). Raises HoldConflict when somebody else holds the cards."""
         with self._lock:
             if self._hold is None:
                 since = datetime.now().astimezone().isoformat(timespec="seconds")
-                return self._write(Hold(owner, reason, since, REQUESTED))
+                return self._write(Hold(owner, reason, model, model_server, since, REQUESTED))
             if self._hold.owner != owner:
                 raise HoldConflict(self._hold)
             return self._hold
@@ -85,6 +90,19 @@ class HoldStore:
             if self._hold is not expected or expected.state != REQUESTED:
                 return None
             return self._write(replace(expected, state=ACTIVE, free=free))
+
+    def grant(self, owner: str, by: str) -> Hold | None:
+        """Mark the requested hold of ``owner`` as granted by ``by`` (a copy replaces it, so the worker's
+        identity check in ``activate`` applies to the copy); an active hold is returned as it is, None when
+        there is no hold. Raises HoldConflict when the hold belongs to somebody else."""
+        with self._lock:
+            if self._hold is None:
+                return None
+            if self._hold.owner != owner:
+                raise HoldConflict(self._hold)
+            if self._hold.state != REQUESTED:
+                return self._hold
+            return self._write(replace(self._hold, granted_by=by))
 
     def release(self, owner: str, force: bool) -> Hold | None:
         """Let go of the hold (a requested one is withdrawn); returns the hold let go of, None when there
@@ -120,6 +138,15 @@ class HoldStore:
             free = data["free"]
             if free is not None and not isinstance(free, dict):
                 raise ValueError("free is no object")
-            return Hold(str(data["owner"]), str(data["reason"]), str(data["since"]), state, free)
+            model, model_server = data["model"], data["model_server"]
+            if not all(value is None or isinstance(value, str) for value in (model, model_server)):
+                raise ValueError("model and model_server are a name or null")
+            granted_by = data["granted_by"]
+            if granted_by is not None and not isinstance(granted_by, str):
+                raise ValueError("granted_by is a name or null")
+            return Hold(
+                str(data["owner"]), str(data["reason"]), model, model_server, str(data["since"]), state, free,
+                granted_by,
+            )
         except (ValueError, KeyError, TypeError) as error:
             raise HoldFileError(f"the hold file {self._path} is malformed: {error!r}") from error

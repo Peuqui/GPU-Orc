@@ -1,4 +1,4 @@
-"""HTTP interface: GET /health, GET /status, GET /loading, GET /work, POST /free, POST and DELETE /hold, POST /work,
+"""HTTP interface: GET /health, GET /status, GET /loading, GET /work, POST /free, POST and DELETE /hold, POST /hold/grant, POST /work,
 DELETE /work/<owner> (standard library server, one thread per request)."""
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ from .orchestrator import FreeRequest, ModelServerUnreachable, NotFound, Orchest
 
 MAX_BODY_BYTES = 64 * 1024
 WORK_PATH_PREFIX = "/work/"
+HOLD_FIELDS = {"owner", "reason", "model"}
 WORK_FIELDS = {"owner", "reason", "ttl_s"}
 FREE_FIELDS = {"gpus", "model", "model_server", "keep", "reason", "dry_run"}
 
@@ -62,6 +63,8 @@ class Handler(BaseHTTPRequestHandler):
             act: Any = self.server.orchestrator.free
         elif self.path == "/hold":
             parse, act = parse_hold_request, lambda request: self.server.orchestrator.hold(*request)
+        elif self.path == "/hold/grant":
+            parse, act = parse_grant_request, lambda request: self.server.orchestrator.grant_hold(*request)
         elif self.path == "/work":
             parse, act = parse_work_request, lambda request: self.server.orchestrator.begin_work(*request)
         else:
@@ -147,12 +150,29 @@ def authorization_error(client_ip: str, header: str, token: str | None) -> tuple
     return None
 
 
-def parse_hold_request(body: Any) -> tuple[str, str]:
-    """``POST /hold``: ``{"owner": "<who holds the cards>", "reason": "<why>"}``."""
-    if not isinstance(body, dict) or set(body) != {"owner", "reason"} \
+def parse_hold_request(body: Any) -> tuple[str, str, str | None, str | None]:
+    """``POST /hold``: ``{"owner": "<who holds the cards>", "reason": "<why>", "model": "<model of the model server,
+    or null>"}``, plus ``"model_server"`` when several model servers are configured."""
+    message = ('body: {"owner": "<who holds the cards>", "reason": "<why>", "model": "<model name or null>", '
+               '"model_server": "<name, only with a model>"}')
+    if not isinstance(body, dict) or not HOLD_FIELDS <= set(body) <= HOLD_FIELDS | {"model_server"}:
+        raise RequestError(message)
+    if not all(isinstance(body[key], str) and body[key].strip() for key in ("owner", "reason")):
+        raise RequestError("owner and reason must be non-empty strings")
+    model, model_server = body["model"], body.get("model_server")
+    if model is not None and (not isinstance(model, str) or not model):
+        raise RequestError("model must be a name or null")
+    if model_server is not None and (model is None or not isinstance(model_server, str) or not model_server):
+        raise RequestError("model_server must be a name, and only goes with a model")
+    return body["owner"].strip(), body["reason"].strip(), model, model_server
+
+
+def parse_grant_request(body: Any) -> tuple[str, str]:
+    """``POST /hold/grant``: ``{"owner": "<owner of the hold>", "by": "<who grants it>"}``."""
+    if not isinstance(body, dict) or set(body) != {"owner", "by"} \
             or not all(isinstance(body[key], str) and body[key].strip() for key in body):
-        raise RequestError('body: {"owner": "<who holds the cards>", "reason": "<why>"}')
-    return body["owner"].strip(), body["reason"].strip()
+        raise RequestError('body: {"owner": "<owner of the hold>", "by": "<who grants it>"}')
+    return body["owner"].strip(), body["by"].strip()
 
 
 def parse_release_request(body: Any) -> tuple[str, bool]:

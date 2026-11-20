@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 from fakes import GPUS
-from test_orchestrator import FakeService, model, server
+from test_orchestrator import FAST, FakeService, Machine, model, server
 
 from gpu_orc.hold import HoldStore
 from gpu_orc.idle_run import run_if_idle
@@ -21,9 +21,10 @@ from gpu_orc.work import WorkStore
 
 @pytest.fixture
 def url(tmp_path: Path) -> Iterator[str]:
-    consumers = [FakeService("stt"), server(model("big", GPUS[0].uuid))]
-    orchestrator = Orchestrator(consumers, 660, query=lambda: list(GPUS), hold=HoldStore(tmp_path / "hold.json"),
-                                work=WorkStore())
+    memory = Machine()
+    consumers = [FakeService("stt"), server(model("big", GPUS[0].uuid), machine=memory)]
+    orchestrator = Orchestrator(consumers, 660, query=memory.query, verify_settings=FAST,
+                                hold=HoldStore(tmp_path / "hold.json"), work=WorkStore())
     orchestrator.start_hold_worker()
     httpd = GpuOrcServer(("127.0.0.1", 0), orchestrator, token=None)
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
@@ -127,14 +128,15 @@ def held_over_http(url: str) -> Any:
 
 def test_hold_and_let_go(quiet_url: str) -> None:
     url = quiet_url
-    status, body = call(f"{url}/hold", "POST", {"owner": "game", "reason": "gaming"})
+    status, body = call(f"{url}/hold", "POST", {"owner": "game", "reason": "gaming", "model": None})
     requested = body["hold"]
     assert status == 200 and (requested["owner"], requested["reason"], requested["state"]) == ("game", "gaming", "requested")
-    assert requested["free"] is None
+    assert requested["free"] is None and requested["model"] is None and requested["model_server"] is None
+    assert requested["granted_by"] is None
     hold = held_over_http(url)
     assert (hold["owner"], hold["since"], hold["state"]) == ("game", requested["since"], "active")
     assert "free" in hold and hold["free"]["free"] is True
-    assert call(f"{url}/hold", "POST", {"owner": "game", "reason": "gaming"}) == (200, {"hold": hold})
+    assert call(f"{url}/hold", "POST", {"owner": "game", "reason": "gaming", "model": None}) == (200, {"hold": hold})
     light = call(f"{url}/loading")[1]
     assert light["held"] == hold and light["hold_requested"] is None
     assert call(f"{url}/status")[1]["held"] == hold
@@ -142,38 +144,66 @@ def test_hold_and_let_go(quiet_url: str) -> None:
     assert call(f"{url}/loading") == (200, {"loading": [], "held": None, "hold_requested": None})
 
 
-def test_a_hold_with_work_is_requested_over_http(quiet_url: str) -> None:
-    url = quiet_url
-    call(f"{url}/work", "POST", {"owner": "aifred", "reason": "turn", "ttl_s": 60})
-    status, body = call(f"{url}/hold", "POST", {"owner": "game", "reason": "gaming"})
+def test_a_hold_with_a_loaded_main_model_is_requested_until_granted_over_http(url: str) -> None:
+    status, body = call(f"{url}/hold", "POST", {"owner": "game", "reason": "gaming", "model": None})
     assert status == 200 and body["hold"]["state"] == "requested" and body["hold"]["free"] is None
+    time.sleep(0.3)
     light = call(f"{url}/loading")[1]
     assert light["held"] is None and light["hold_requested"] == body["hold"]
-    call(f"{url}/work/aifred", "DELETE")
-    held_over_http(url)
+    status, granted = call(f"{url}/hold/grant", "POST", {"owner": "game", "by": "peuqui"})
+    assert status == 200 and granted["hold"]["granted_by"] == "peuqui" and granted["hold"]["state"] == "requested"
+    assert held_over_http(url)["granted_by"] == "peuqui"
+    assert call(f"{url}/hold/grant", "POST", {"owner": "game", "by": "peuqui"})[1] == {"hold": held_over_http(url)}
+
+
+def test_a_grant_answers_404_without_a_hold_and_409_for_another_owner(url: str) -> None:
+    assert call(f"{url}/hold/grant", "POST", {"owner": "game", "by": "peuqui"})[0] == 404
+    call(f"{url}/hold", "POST", {"owner": "game", "reason": "gaming", "model": None})
+    status, body = call(f"{url}/hold/grant", "POST", {"owner": "render", "by": "peuqui"})
+    assert status == 409 and body["owner"] == "game" and body["state"] == "requested"
+
+
+@pytest.mark.parametrize("body", [
+    None, {}, {"owner": "o"}, {"by": "p"}, {"owner": "", "by": "p"}, {"owner": "o", "by": ""}, {"owner": "o", "by": 3},
+    {"owner": "o", "by": "p", "x": 1},
+])
+def test_a_grant_needs_an_owner_and_a_by(url: str, body: Any) -> None:
+    assert call(f"{url}/hold/grant", "POST", body)[0] == 400
+
+
+def test_a_hold_for_a_model_is_checked_and_keeps_it(url: str) -> None:
+    status, body = call(f"{url}/hold", "POST", {"owner": "game", "reason": "gaming", "model": "ghost"})
+    assert status == 400 and "ghost" in body["error"]
     assert call(f"{url}/loading")[1]["hold_requested"] is None
+    status, body = call(f"{url}/hold", "POST", {"owner": "game", "reason": "gaming", "model": "big", "model_server": "ls"})
+    assert status == 200 and (body["hold"]["model"], body["hold"]["model_server"]) == ("big", "ls")
+    assert held_over_http(url)["free"]["actions"] == [{"consumer": "ls", "item": "big", "outcome": "kept"}]
 
 
 def test_another_owner_gets_409_with_the_holder_and_cannot_release(quiet_url: str) -> None:
     url = quiet_url
-    call(f"{url}/hold", "POST", {"owner": "game", "reason": "gaming"})
+    call(f"{url}/hold", "POST", {"owner": "game", "reason": "gaming", "model": None})
     held = held_over_http(url)
-    status, body = call(f"{url}/hold", "POST", {"owner": "render", "reason": "job"})
+    status, body = call(f"{url}/hold", "POST", {"owner": "render", "reason": "job", "model": None})
     assert status == 409 and (body["owner"], body["state"], body["since"]) == ("game", "active", held["since"])
     assert "game" in body["error"]
     assert call(f"{url}/hold", "DELETE", {"owner": "render"})[0] == 409
     assert call(f"{url}/loading")[1]["held"] is not None
-    assert call(f"{url}/hold", "POST", {"owner": "game", "reason": "again"}) == (200, {"hold": held})  # same owner: no change
+    assert call(f"{url}/hold", "POST", {"owner": "game", "reason": "again", "model": None}) == (200, {"hold": held})  # same owner: no change
     assert call(f"{url}/hold", "DELETE", {"owner": "person", "force": True}) == (200, {"hold": None})
 
 
 @pytest.mark.parametrize("body", [
-    None, {}, {"reason": "x"}, {"owner": "o"}, {"owner": "o", "reason": ""}, {"owner": "", "reason": "x"},
-    {"owner": "o", "reason": 3}, {"owner": "o", "reason": "x", "until": 5},
+    None, {}, {"reason": "x", "model": None}, {"owner": "o", "model": None}, {"owner": "o", "reason": "x"},
+    {"owner": "o", "reason": "", "model": None}, {"owner": "", "reason": "x", "model": None},
+    {"owner": "o", "reason": 3, "model": None}, {"owner": "o", "reason": "x", "model": None, "until": 5},
+    {"owner": "o", "reason": "x", "model": 5}, {"owner": "o", "reason": "x", "model": ""},
+    {"owner": "o", "reason": "x", "model": None, "model_server": "ls"},
+    {"owner": "o", "reason": "x", "model": "big", "model_server": ""},
 ])
-def test_a_hold_needs_an_owner_and_a_reason(url: str, body: Any) -> None:
+def test_a_hold_needs_an_owner_a_reason_and_a_model_or_null(url: str, body: Any) -> None:
     status, answer = call(f"{url}/hold", "POST", body)
-    assert status == 400 and "owner" in answer["error"]
+    assert status == 400 and ("owner" in answer["error"] or "model" in answer["error"])
 
 
 @pytest.mark.parametrize("body", [None, {}, {"owner": ""}, {"owner": "o", "force": "yes"}, {"owner": "o", "x": 1}])

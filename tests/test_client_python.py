@@ -79,68 +79,108 @@ def test_traffic_light_green_then_red_while_a_model_loads(orc: GpuOrc) -> None:
 def test_hold_makes_the_light_red_until_released() -> None:
     with serving(machine()) as port:
         orc = GpuOrc(f"http://127.0.0.1:{port}")
-        assert orc.hold("game", "gaming").state == "requested"
-        hold = orc.hold_and_wait("game", "gaming", poll_s=0.05, timeout_s=5)
+        requested = orc.hold("game", "gaming", "big")
+        assert (requested.state, requested.model, requested.model_server) == ("requested", "big", "ls")
+        hold = orc.hold_and_wait("game", "gaming", "big", poll_s=0.05, timeout_s=5)
         assert hold.state == "active" and hold.free is not None and hold.problems() == []
-        assert [a.outcome for a in hold.free.actions] == ["released", "released"]
+        assert [(a.item, a.outcome) for a in hold.free.actions] == [("gpu-worker", "released"), ("big", "kept")]
         light = orc.loading()
         assert light.red and light.loading == () and light.held == hold and light.hold_requested is None
         orc.release_hold("game")
         assert not orc.loading().red
 
 
-def test_hold_with_work_is_requested_and_hold_and_wait_returns_when_it_is_active() -> None:
+def test_hold_with_a_loaded_main_model_is_requested_and_the_light_stays_green() -> None:
+    with serving(machine()) as port:
+        orc = GpuOrc(f"http://127.0.0.1:{port}")
+        hold = orc.hold("game", "gaming", None)
+        assert (hold.state, hold.model, hold.model_server, hold.granted_by) == ("requested", None, None, None)
+        time.sleep(0.2)
+        light = orc.loading()
+        assert not light.red and light.hold_requested == hold and light.held is None
+
+
+def test_grant_hold_waits_for_the_work_of_others_and_hold_and_wait_returns_when_it_is_active() -> None:
     with serving(machine()) as port:
         orc = GpuOrc(f"http://127.0.0.1:{port}")
         orc.work_begin("aifred", "turn", 60)
-        assert orc.hold("game", "gaming").state == "requested"
-        light = orc.loading()
-        assert not light.red and light.hold_requested is not None and light.hold_requested.owner == "game"
+        orc.hold("game", "gaming", None)
+        granted = orc.grant_hold("game", "peuqui")
+        assert granted.state == "requested" and granted.granted_by == "peuqui"
+        assert orc.loading().hold_requested == granted
         timer = threading.Timer(0.5, orc.work_end, args=("aifred",))
         timer.start()
-        hold = orc.hold_and_wait("game", "gaming", poll_s=0.1, timeout_s=10)
+        hold = orc.hold_and_wait("game", "gaming", None, poll_s=0.1, timeout_s=10)
         timer.join()
-        assert hold.state == "active" and hold.problems() == [] and orc.loading().held == hold
+        assert hold.state == "active" and hold.granted_by == "peuqui" and orc.loading().held == hold
+
+
+def test_hold_and_wait_without_a_limit_waits_until_the_hold_is_granted() -> None:
+    with serving(machine()) as port:
+        orc = GpuOrc(f"http://127.0.0.1:{port}")
+        timer = threading.Timer(0.5, orc.grant_hold, args=("game", "peuqui"))
+        timer.start()
+        hold = orc.hold_and_wait("game", "gaming", None, poll_s=0.1, timeout_s=None)
+        timer.join()
+        assert hold.state == "active" and hold.granted_by == "peuqui"
 
 
 def test_hold_and_wait_times_out_and_withdraws_its_request() -> None:
     with serving(machine()) as port:
         orc = GpuOrc(f"http://127.0.0.1:{port}")
-        orc.work_begin("aifred", "turn", 60)
         with pytest.raises(GpuOrcError, match="not active after"):
-            orc.hold_and_wait("game", "gaming", poll_s=0.05, timeout_s=0.3)
+            orc.hold_and_wait("game", "gaming", None, poll_s=0.05, timeout_s=0.3)
         light = orc.loading()
         assert light.hold_requested is None and light.held is None
-        orc.work_end("aifred")
-        time.sleep(0.3)
-        assert orc.loading().held is None  # nothing activates later behind the caller's back
 
 
 def test_hold_and_wait_raises_with_the_result_when_clearing_failed() -> None:
     with serving(machine(stubborn=True)) as port:
         orc = GpuOrc(f"http://127.0.0.1:{port}")
         with pytest.raises(GpuOrcError, match="tts qwen: refused_busy"):
-            orc.hold_and_wait("game", "gaming", poll_s=0.05, timeout_s=5)
+            orc.hold_and_wait("game", "gaming", "big", poll_s=0.05, timeout_s=5)
         assert orc.loading().held is not None  # active anyway: the hold is the caller's to release
 
 
 def test_hold_and_wait_says_when_its_hold_was_released_by_force() -> None:
     with serving(machine()) as port:
         orc = GpuOrc(f"http://127.0.0.1:{port}")
-        orc.work_begin("aifred", "turn", 60)
         timer = threading.Timer(0.3, orc.release_hold, args=("person",), kwargs={"force": True})
         timer.start()
         with pytest.raises(GpuOrcError, match=r"the hold of 'game' is gone \(released\)"):
-            orc.hold_and_wait("game", "gaming", poll_s=0.05, timeout_s=5)
+            orc.hold_and_wait("game", "gaming", None, poll_s=0.05, timeout_s=5)
         timer.join()
+
+
+def test_hold_for_an_unknown_model_is_an_error() -> None:
+    with serving(machine()) as port, pytest.raises(GpuOrcError, match="HTTP 400"):
+        GpuOrc(f"http://127.0.0.1:{port}").hold("game", "gaming", "ghost")
+
+
+def test_hold_names_the_model_server_when_there_are_several() -> None:
+    with serving(machine(two_servers=True)) as port:
+        orc = GpuOrc(f"http://127.0.0.1:{port}")
+        with pytest.raises(GpuOrcError, match="HTTP 400"):
+            orc.hold("game", "gaming", "big")
+        assert orc.hold("game", "gaming", "big", model_server="ls").model_server == "ls"
+
+
+def test_grant_hold_errors_over_the_client() -> None:
+    with serving(machine()) as port:
+        orc = GpuOrc(f"http://127.0.0.1:{port}")
+        with pytest.raises(GpuOrcError, match="HTTP 404"):
+            orc.grant_hold("game", "peuqui")
+        orc.hold("game", "gaming", None)
+        with pytest.raises(GpuOrcError, match="HTTP 409"):
+            orc.grant_hold("render", "peuqui")
 
 
 def test_another_owner_and_force_over_the_client() -> None:
     with serving(machine()) as port:
         orc = GpuOrc(f"http://127.0.0.1:{port}")
-        orc.hold("game", "gaming")
+        orc.hold("game", "gaming", None)
         with pytest.raises(GpuOrcError, match="HTTP 409"):
-            orc.hold("render", "job")
+            orc.hold("render", "job", None)
         with pytest.raises(GpuOrcError, match="HTTP 409"):
             orc.release_hold("render")
         orc.release_hold("person", force=True)

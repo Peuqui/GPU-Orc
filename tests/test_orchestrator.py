@@ -115,12 +115,12 @@ def server(*held: Holder, machine: Machine | None = None, **kwargs: Any) -> Fake
 
 def make(
     *consumers: Consumer, machine: Machine | None = None, timeout: float = 30.0, load_grace_s: float = 15.0,
-    work: WorkStore | None = None, hold_file: Path | None = None, restart_grace_s: float = 0.0,
+    work: WorkStore | None = None, hold_file: Path | None = None, hold_check_interval_s: float = 0.1,
 ) -> Orchestrator:
     query = machine.query if machine is not None else lambda: list(GPUS)
     hold = HoldStore(hold_file or Path(tempfile.mkdtemp()) / "hold.json")
     return Orchestrator(consumers, timeout, query=query, verify_settings=FAST, load_grace_s=load_grace_s,
-                        restart_grace_s=restart_grace_s, hold=hold, work=work or WorkStore())
+                        hold_check_interval_s=hold_check_interval_s, hold=hold, work=work or WorkStore())
 
 
 def outcomes(result: dict[str, Any]) -> list[tuple[str, str, str]]:

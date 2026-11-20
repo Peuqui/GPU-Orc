@@ -34,7 +34,8 @@ export async function freeForModel(url, token, model, reason, keep = []) {
 
 /**
  * The traffic light: {loading: string[], held, holdRequested, red: boolean}. `held` is the hold
- * ({owner, reason, since, state, free}) while it is active, `holdRequested` one that waits for work to end.
+ * ({owner, reason, model, model_server, since, state, free, granted_by}) while it is active,
+ * `holdRequested` one that waits for the cards to become free.
  */
 export async function loading(url, token) {
   const answer = await call(url, token, 'GET', '/loading', QUICK_TIMEOUT_MS);

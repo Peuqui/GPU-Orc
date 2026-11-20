@@ -57,7 +57,7 @@ def test_keep_is_passed_on() -> None:
 def test_hold_shows_red() -> None:
     with serving(machine()) as port:
         url = f"http://127.0.0.1:{port}"
-        request = urllib.request.Request(f"{url}/hold", data=json.dumps({"owner": "game", "reason": "gaming"}).encode(), method="POST")
+        request = urllib.request.Request(f"{url}/hold", data=json.dumps({"owner": "game", "reason": "gaming", "model": "big"}).encode(), method="POST")
         urllib.request.urlopen(request, timeout=10).read()
         deadline = time.monotonic() + 5
         while (light := node(url, "loading"))["held"] is None:  # the hold worker clears, then the hold is active
@@ -70,13 +70,14 @@ def test_hold_shows_red() -> None:
 def test_hold_requested_shows_but_the_light_stays_green() -> None:
     with serving(machine()) as port:
         url = f"http://127.0.0.1:{port}"
-        for path, body in (("/work", {"owner": "aifred", "reason": "turn", "ttl_s": 60}),
-                           ("/hold", {"owner": "game", "reason": "gaming"})):
-            request = urllib.request.Request(f"{url}{path}", data=json.dumps(body).encode(), method="POST")
-            urllib.request.urlopen(request, timeout=10).read()
+        body = {"owner": "game", "reason": "gaming", "model": None}  # the main model "big" runs: not free
+        request = urllib.request.Request(f"{url}/hold", data=json.dumps(body).encode(), method="POST")
+        urllib.request.urlopen(request, timeout=10).read()
+        time.sleep(0.3)
         light = node(url, "loading")
         assert light["red"] is False and light["held"] is None
         assert light["holdRequested"]["owner"] == "game" and light["holdRequested"]["state"] == "requested"
+        assert light["holdRequested"]["model"] is None and light["holdRequested"]["granted_by"] is None
 
 
 def test_errors_are_gpu_orc_errors() -> None:

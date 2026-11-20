@@ -64,8 +64,9 @@ Errors always come as `{"error": "<text>"}`. An unknown path gives `404`.
 
 Which big models are loading right now, and whether the cards are held (`held`, see `POST /hold`, only for an
 ACTIVE hold, so that everybody who reads the light keeps its meaning); `hold_requested` names a hold that waits
-for the work on the cards to end (callers that start new work, like AIfred's turns, wait on it, or a stream of new
-work would postpone the hold for ever; it does not make the light red). Empty and `null` = green. While a model loads, its cards look emptier than
+for the cards to become free (a main model is still loaded; callers that load a main model for themselves, like
+an Agent-Orc session, treat it like `held`, or the clearing takes the model away in the middle; it does not make
+the light red). Empty and `null` = green. While a model loads, its cards look emptier than
 they are about to be. Whoever wants to put something on a card (STT-Suite, TTS-Suite, AIfred's image
 describer) asks here first and starts nothing on the GPU while there is an entry. The answer comes at once,
 without nvidia-smi and without asking the consumers.
@@ -75,52 +76,75 @@ server knows of it, and for `load_grace_s` (config, default 15 s) after that `/f
 model server says so itself (`starting`). Its persistent helpers do not count, they load into their own
 room, not even when something is cleared for them. If the model server does not answer: `502`. That is no green light.
 
-### `POST /hold`, `DELETE /hold` — keeping the cards for somebody
+### `POST /hold`, `POST /hold/grant`, `DELETE /hold` — keeping the cards for somebody
 
 ```json
-{"owner": "vllm-research", "reason": "gaming"}
+{"owner": "vllm-research", "reason": "gaming", "model": null}
 ```
 
 Somebody keeps this machine's cards (a game, other work). The hold has an `owner` and exists once at a time.
 GPU-Orc stores it in `hold_file` (config, default `~/.local/state/gpu-orc/hold.json`; it outlasts a restart of
-GPU-Orc and of the machine). A hold file of the old format (no owner) keeps GPU-Orc from starting. A body that is
-not exactly `owner` and `reason` (non-empty strings): `400`.
+GPU-Orc and of the machine). A hold file of an older format (no `model`, `model_server`, `granted_by`) keeps
+GPU-Orc from starting; there is no migration, remove the file.
 
-- A new hold is REQUESTED (`"state": "requested"`, `"free": null`), and the answer comes at once; nothing is
-  touched yet:
+Body: exactly `owner` and `reason` (non-empty strings) and `model`, which is required as a key. `model` is a
+model of the model server (llama-swap) that the owner needs and that must stay loaded, or an explicit `null`
+(the owner needs none, e.g. a game). A model is checked when it is asked for like in `POST /free`: unknown
+model `400`. `model_server` (optional, only with a model) names the model server under the same rule as in
+`POST /free`: required only with several model servers configured. The hold stores `model` and the resolved
+`model_server` (`null` without a model). Any other body: `400`.
+
+- A new hold is REQUESTED (`"state": "requested"`, `"free": null`, `"granted_by": null`), and the answer comes
+  at once, showing the state at that moment; nothing is touched yet:
 
   ```json
-  {"hold": {"owner": "vllm-research", "reason": "gaming", "since": "2026-11-05T09:12:00+01:00",
-            "state": "requested", "free": null}}
+  {"hold": {"owner": "vllm-research", "reason": "gaming", "model": null, "model_server": null,
+            "since": "2026-11-05T09:12:00+01:00", "state": "requested", "free": null, "granted_by": null}}
   ```
 
-- One thread in GPU-Orc, running as long as the service, makes every change of the hold: at the first moment no
-  work of others (`POST /work`) is left, it clears every card like `POST /free` with `"gpus": "all"` and makes the
-  hold ACTIVE with that clearing in `free` (`{"...": "as POST /free"}`). Without work of others this follows right
-  after the answer. The work of the hold's own owner does not count: use the same owner name for `/work` and
-  `/hold`. `POST /hold` and `DELETE /work/<owner>` wake the thread, and a lease that runs out (the reporter
-  crashed) is found at the moment it expires. Only the very hold the cards were cleared for turns active: released
-  (and maybe requested anew) meanwhile, the clearing counts for nothing and the new hold waits for its own.
-  Nothing clears the cards inside a `GET`. After a start of GPU-Orc a hold that is still requested waits
-  `work_lease_s` (config, default 60 s) before it may activate, so that the renewals of running work come back
-  first. Callers wait for ACTIVE with `hold_and_wait` (clients). Should the thread itself fail outside the
-  clearing (the hold file cannot be written, a bug), GPU-Orc ends with the traceback on stderr instead of
-  answering on with holds that never turn active; the unit's `Restart=on-failure` starts it again.
-- A hold only REQUESTED refuses nobody by itself: the work that keeps it back (a turn of AIfred) goes on, and
-  what serves that work (reading aloud, dictation) may still load. Whoever reports no work and would load
-  something big for itself (an Agent-Orc session) treats `hold_requested` like `held`, or the clearing takes it
-  away in the middle. What starts in the seconds between the end of the last work and ACTIVE, while the cards
-  are cleared, stays on them: a known gap, short by nature.
+- **The cards are free** when on no model server a main model is loaded or loading. A main model is a model of
+  the model server that is not persistent, except the model the hold itself asks for (same server and name;
+  loading counts only for another model). Persistent helpers and every other consumer (STT-Suite, TTS-Suite,
+  AIfred) do not count, clearing takes them along. A model server that does not answer (or nvidia-smi) means
+  not free; GPU-Orc says so once on stderr per change, not at every look.
+- One thread in GPU-Orc, running as long as the service, makes every change of the hold. For a requested hold it
+  looks whether the cards are free, at once when asked (a new hold on free cards turns active right after the
+  answer) and then every `hold_check_interval_s` (config, default 30 s). `POST /hold`, `POST /hold/grant` and
+  `DELETE /work/<owner>` wake it. When the cards are free it clears every card like `POST /free` with
+  `"gpus": "all"`, `keep` set to the requested model (a running requested model stays: it is `kept` in the
+  result) and a reason `hold: <owner>: <reason>`, and makes the hold ACTIVE with that clearing in `free`
+  (`{"...": "as POST /free"}`). Only the very hold the cards were cleared for turns active: released (and maybe
+  requested anew) meanwhile, the clearing counts for nothing and the new hold waits for its own. Nothing clears
+  the cards inside a `GET`. Reported work (`POST /work`) does not influence a hold that is not granted. Callers
+  wait for ACTIVE with `hold_and_wait` (clients). Should the thread itself fail outside the clearing (the hold
+  file cannot be written, a bug), GPU-Orc ends with the traceback on stderr instead of answering on with holds
+  that never turn active; the unit's `Restart=on-failure` starts it again.
+- A hold only REQUESTED refuses nobody by itself: the main model that keeps it back goes on, and what serves it
+  may still load. Whoever would load something big for itself (an Agent-Orc session) treats `hold_requested`
+  like `held`. What starts in the seconds between the cards being found free and ACTIVE, while they are
+  cleared, stays on them: a known gap, short by nature.
 - When the clearing ends with a problem (a consumer busy, memory left, or an error while clearing, then one
   action `gpu-orc` / `all cards` / `error` with the detail), the hold is active anyway and keeps that `free` (also
   in the hold file and in `GET /status`); nobody retries behind the owner's back.
-- **Asking again** as the same owner changes nothing and returns the current hold. **Another owner** while any hold
-  exists (requested or active): `409`, `{"error": "...", "owner": "<holder>", "state": "...", "since": "..."}`.
+- **Asking again** as the same owner changes nothing and returns the current hold, also when `reason` or `model`
+  differ. **Another owner** while any hold exists (requested or active): `409`,
+  `{"error": "...", "owner": "<holder>", "state": "...", "since": "..."}`.
+
+`POST /hold/grant` with `{"owner": "<owner of the hold>", "by": "<who grants it>"}` (both non-empty strings) is the
+person's click that clears the cards although a main model is loaded. No hold: `404`. A hold of another owner:
+`409` (same body as above). A hold that is active already: `200`, the hold unchanged. Otherwise exactly this
+hold is marked granted: `"granted_by": "<by>"`, in the hold file (it outlasts a restart; a hold released and
+requested anew starts with `granted_by` `null`), the worker is woken, GPU-Orc logs `[hold] GRANTED by <by> for
+<owner> (...)` on stderr, and the answer is `{"hold": {...}}` (still requested). The worker clears a granted
+hold without asking whether the cards are free, but only once no work of anybody but the owner is reported
+(`POST /work`): a running answer of AIfred is never broken off, not even by a click; `DELETE /work/<owner>` wakes
+the worker, which then looks every `hold_check_interval_s` otherwise. The work of the owner itself does not
+count, so use **the same owner name for `/work` and `/hold`**.
 
 `GET /loading` and `GET /status` carry `"held"` (the hold, only while ACTIVE) and `"hold_requested"` (the hold,
-only while REQUESTED). Whoever would put something new on a card (a describer of another machine, a TTS
-container started from there) leaves the cards alone while `held` is set. GPU-Orc ends nothing a caller loads
-without asking.
+only while REQUESTED, with `granted_by`). Whoever would put something new on a card (a describer of another
+machine, a TTS container started from there) leaves the cards alone while `held` is set. GPU-Orc ends nothing a
+caller loads without asking.
 
 `DELETE /hold` with `{"owner": "...", "force": false}` lets go (a requested hold is withdrawn); answer
 `{"hold": null}`. Only the owner may: another owner gets `409` (same body as above). `"force": true` lets go of

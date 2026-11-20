@@ -68,6 +68,18 @@ def test_a_port_is_no_boolean(tmp_path: Path) -> None:
         load_config(write(tmp_path, {"listen": {"port": True}, "consumers": CONSUMERS}))
 
 
-def test_work_lease_defaults_to_the_usual_ttl_and_can_be_set(tmp_path: Path) -> None:
-    assert load_config(write(tmp_path, {"consumers": CONSUMERS})).work_lease_s == 60.0
-    assert load_config(write(tmp_path, {"consumers": CONSUMERS, "work_lease_s": 120})).work_lease_s == 120.0
+def test_hold_check_interval_defaults_to_30_seconds_and_can_be_set(tmp_path: Path) -> None:
+    assert load_config(write(tmp_path, {"consumers": CONSUMERS})).hold_check_interval_s == 30.0
+    assert load_config(write(tmp_path, {"consumers": CONSUMERS, "hold_check_interval_s": 5})).hold_check_interval_s == 5.0
+
+
+@pytest.mark.parametrize("value", ["often", True, [30]])
+def test_hold_check_interval_must_be_a_number(tmp_path: Path, value: Any) -> None:
+    with pytest.raises(ConfigError, match="hold_check_interval_s has the wrong type"):
+        load_config(write(tmp_path, {"consumers": CONSUMERS, "hold_check_interval_s": value}))
+
+
+@pytest.mark.parametrize("value", [0, -5, 0.0])
+def test_hold_check_interval_must_be_positive(tmp_path: Path, value: Any) -> None:
+    with pytest.raises(ConfigError, match="hold_check_interval_s must be greater than 0"):
+        load_config(write(tmp_path, {"consumers": CONSUMERS, "hold_check_interval_s": value}))
