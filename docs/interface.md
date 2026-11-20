@@ -106,6 +106,11 @@ not exactly `owner` and `reason` (non-empty strings): `400`.
   first. Callers wait for ACTIVE with `hold_and_wait` (clients). Should the thread itself fail outside the
   clearing (the hold file cannot be written, a bug), GPU-Orc ends with the traceback on stderr instead of
   answering on with holds that never turn active; the unit's `Restart=on-failure` starts it again.
+- A hold only REQUESTED refuses nobody by itself: the work that keeps it back (a turn of AIfred) goes on, and
+  what serves that work (reading aloud, dictation) may still load. Whoever reports no work and would load
+  something big for itself (an Agent-Orc session) treats `hold_requested` like `held`, or the clearing takes it
+  away in the middle. What starts in the seconds between the end of the last work and ACTIVE, while the cards
+  are cleared, stays on them: a known gap, short by nature.
 - When the clearing ends with a problem (a consumer busy, memory left, or an error while clearing, then one
   action `gpu-orc` / `all cards` / `error` with the detail), the hold is active anyway and keeps that `free` (also
   in the hold file and in `GET /status`); nobody retries behind the owner's back.
