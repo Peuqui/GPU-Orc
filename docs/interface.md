@@ -139,7 +139,9 @@ requested anew starts with `granted_by` `null`), the worker is woken, GPU-Orc lo
 hold without asking whether the cards are free, but only once no work of anybody but the owner is reported
 (`POST /work`): a running answer of AIfred is never broken off, not even by a click; `DELETE /work/<owner>` wakes
 the worker, which then looks every `hold_check_interval_s` otherwise. The work of the owner itself does not
-count, so use **the same owner name for `/work` and `/hold`**.
+count, so use **the same owner name for `/work` and `/hold`**. Whoever reports `/work` and makes new work wait
+while a hold is held or granted must not report that waiting as work: GPU-Orc would wait for the work to end, the
+work for the hold, and neither would move.
 
 `GET /loading` and `GET /status` carry `"held"` (the hold, only while ACTIVE) and `"hold_requested"` (the hold,
 only while REQUESTED, with `granted_by`). Whoever would put something new on a card (a describer of another

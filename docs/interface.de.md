@@ -140,7 +140,9 @@ GPU-Orc schreibt `[hold] GRANTED by <by> for <owner> (...)` auf stderr, und die 
 wenn keine Arbeit eines anderen als des Eigentümers gemeldet ist (`POST /work`): eine laufende Antwort von AIfred
 wird nie abgebrochen, auch nicht durch einen Klick; `DELETE /work/<owner>` weckt den Thread, sonst schaut er alle
 `hold_check_interval_s` nach. Die Arbeit des Eigentümers selbst zählt nicht, deshalb für `/work` und `/hold`
-**denselben Eigentümernamen** benutzen.
+**denselben Eigentümernamen** benutzen. Wer `/work` meldet und neue Arbeit warten lässt, solange ein Halt wirksam
+oder freigegeben ist, darf dieses Warten nicht als Arbeit melden: Sonst wartet GPU-Orc auf das Ende der Arbeit und
+die Arbeit auf den Halt, und keiner kommt weiter.
 
 `GET /loading` und `GET /status` tragen `"held"` (der Halt, nur solange AKTIV) und `"hold_requested"` (der Halt, nur
 solange ANGEFORDERT, mit `granted_by`). Wer etwas Neues auf eine Karte legen würde (ein Bildbeschreiber eines anderen
