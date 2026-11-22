@@ -103,6 +103,7 @@ def test_a_requested_hold_outlasts_a_restart_as_requested(tmp_path: Path) -> Non
     path = tmp_path / "hold.json"
     requested = HoldStore(path).request("game", "gaming", None, None)
     assert requested.state == "requested" and requested.free is None and requested.granted_by is None
+    assert requested.end_requested_by is None
     assert HoldStore(path).get() == requested
 
 
@@ -127,7 +128,7 @@ def test_only_the_very_hold_cleared_for_turns_active(tmp_path: Path) -> None:
 
 
 def test_a_hold_file_without_a_model_is_an_error(tmp_path: Path) -> None:
-    """The format of 0.10.0 (no model, no model_server, no granted_by): no migration."""
+    """The format of 0.10.0 (no model, no model_server, no granted_by, no end_requested_by): no migration."""
     path = tmp_path / "hold.json"
     path.write_text(json.dumps({"owner": "o", "reason": "r", "since": "s", "state": "requested", "free": None}),
                     encoding="utf-8")
@@ -143,6 +144,24 @@ def test_a_hold_file_without_granted_by_is_an_error(tmp_path: Path) -> None:
         HoldStore(path)
 
 
+def test_a_hold_file_without_end_requested_by_is_an_error(tmp_path: Path) -> None:
+    """The format of 0.11.0: no migration."""
+    path = tmp_path / "hold.json"
+    path.write_text(json.dumps({"owner": "o", "reason": "r", "model": None, "model_server": None, "since": "s",
+                                "state": "active", "free": FREE_RESULT, "granted_by": None}), encoding="utf-8")
+    with pytest.raises(HoldFileError, match="malformed"):
+        HoldStore(path)
+
+
+def test_a_hold_file_with_an_end_requested_by_that_is_no_name_is_an_error(tmp_path: Path) -> None:
+    path = tmp_path / "hold.json"
+    path.write_text(json.dumps({"owner": "o", "reason": "r", "model": None, "model_server": None, "since": "s",
+                                "state": "active", "free": FREE_RESULT, "granted_by": None, "end_requested_by": 3}),
+                    encoding="utf-8")
+    with pytest.raises(HoldFileError, match="malformed"):
+        HoldStore(path)
+
+
 def test_a_hold_file_of_the_oldest_format_is_an_error(tmp_path: Path) -> None:
     path = tmp_path / "hold.json"
     path.write_text(json.dumps({"since": "2026-11-05T09:12:00+01:00", "reason": "gaming"}), encoding="utf-8")
@@ -153,7 +172,8 @@ def test_a_hold_file_of_the_oldest_format_is_an_error(tmp_path: Path) -> None:
 def test_a_hold_file_with_an_unknown_state_is_an_error(tmp_path: Path) -> None:
     path = tmp_path / "hold.json"
     path.write_text(json.dumps({"owner": "o", "reason": "r", "model": None, "model_server": None, "since": "s",
-                                "state": "maybe", "free": None, "granted_by": None}), encoding="utf-8")
+                                "state": "maybe", "free": None, "granted_by": None,
+                                "end_requested_by": None}), encoding="utf-8")
     with pytest.raises(HoldFileError, match="malformed"):
         HoldStore(path)
 
@@ -207,6 +227,50 @@ def test_a_grant_does_not_carry_over_to_a_hold_requested_anew(tmp_path: Path) ->
     store.grant("game", "peuqui")
     store.release("game", force=False)
     assert store.request("game", "gaming", None, None).granted_by is None
+
+
+def test_an_end_request_of_an_active_hold_is_kept_in_the_file_and_outlasts_a_restart(tmp_path: Path) -> None:
+    path = tmp_path / "hold.json"
+    store = HoldStore(path)
+    active_hold = store.activate(store.request("game", "gaming", None, None), FREE_RESULT)
+    marked = store.request_end("game", "peuqui")
+    assert active_hold is not None and marked is not None and marked is not active_hold
+    assert (marked.state, marked.end_requested_by) == ("active", "peuqui")
+    assert store.get() is marked and HoldStore(path).get() == marked
+
+
+def test_a_second_end_request_changes_nothing(tmp_path: Path) -> None:
+    store = HoldStore(tmp_path / "hold.json")
+    store.activate(store.request("game", "gaming", None, None), FREE_RESULT)
+    first = store.request_end("game", "peuqui")
+    assert store.request_end("game", "somebody else") is first
+    assert first is not None and first.end_requested_by == "peuqui"
+
+
+def test_an_end_request_withdraws_a_requested_hold(tmp_path: Path) -> None:
+    path = tmp_path / "hold.json"
+    store = HoldStore(path)
+    requested = store.request("game", "gaming", None, None)
+    assert store.request_end("game", "peuqui") is requested
+    assert store.get() is None and not path.exists() and HoldStore(path).get() is None
+    assert store.activate(requested, FREE_RESULT) is None  # the worker's clearing counts for nothing
+
+
+def test_an_end_request_needs_a_hold_and_its_owner(tmp_path: Path) -> None:
+    store = HoldStore(tmp_path / "hold.json")
+    assert store.request_end("game", "peuqui") is None
+    requested = store.request("game", "gaming", None, None)
+    with pytest.raises(HoldConflict, match="'game' .requested"):
+        store.request_end("render", "peuqui")
+    assert store.get() is requested
+
+
+def test_an_end_request_does_not_carry_over_to_a_hold_requested_anew(tmp_path: Path) -> None:
+    store = HoldStore(tmp_path / "hold.json")
+    store.activate(store.request("game", "gaming", None, None), FREE_RESULT)
+    store.request_end("game", "peuqui")
+    store.release("game", force=False)
+    assert store.request("game", "gaming", None, None).end_requested_by is None
 
 
 # --- requested, then active --------------------------------------------------------------------------
@@ -579,6 +643,53 @@ def test_a_grant_outlasts_a_restart(tmp_path: Path) -> None:
     llama = server(model("big", GPUS[0].uuid))
     restarted = started(llama, hold_file=path)
     assert active(restarted)["granted_by"] == "peuqui" and llama.released == ["big"]
+
+
+# --- the end request ------------------------------------------------------------------------------
+
+
+def test_an_end_request_marks_an_active_hold_and_keeps_the_cards_locked(capsys: pytest.CaptureFixture[str]) -> None:
+    orchestrator = started(server())
+    ask(orchestrator)
+    hold = active(orchestrator)
+    answer = orchestrator.request_hold_end("game", "peuqui")
+    assert answer == {"hold": {**hold, "end_requested_by": "peuqui"}}
+    assert orchestrator.loading()["held"] == answer["hold"] and orchestrator.loading()["hold_requested"] is None
+    assert orchestrator.status()["held"]["end_requested_by"] == "peuqui"
+    assert "[hold] END REQUESTED by 'peuqui' for 'game'" in capsys.readouterr().err
+
+
+def test_an_end_request_withdraws_a_requested_hold_at_once(capsys: pytest.CaptureFixture[str]) -> None:
+    orchestrator = started(server(model("big", GPUS[0].uuid)))
+    ask(orchestrator)
+    assert stays_requested(orchestrator) is not None
+    assert orchestrator.request_hold_end("game", "peuqui") == {"hold": None}
+    assert orchestrator.loading() == {"loading": [], "held": None, "hold_requested": None}
+    assert "[hold] WITHDRAWN on request of 'peuqui': 'game'" in capsys.readouterr().err
+
+
+def test_an_end_request_of_another_owner_is_refused() -> None:
+    orchestrator = started(server())
+    ask(orchestrator)
+    active(orchestrator)
+    with pytest.raises(HoldConflict, match="'game' .active"):
+        orchestrator.request_hold_end("render", "peuqui")
+    assert orchestrator.loading()["held"]["end_requested_by"] is None
+
+
+def test_an_end_request_without_a_hold_is_not_found() -> None:
+    with pytest.raises(NotFound, match="no hold"):
+        started(server()).request_hold_end("game", "peuqui")
+
+
+def test_an_end_request_outlasts_a_restart(tmp_path: Path) -> None:
+    path = tmp_path / "hold.json"
+    first = started(server(), hold_file=path)
+    ask(first)
+    active(first)
+    first.request_hold_end("game", "peuqui")
+    restarted = make(server(), hold_file=path)
+    assert restarted.loading()["held"]["end_requested_by"] == "peuqui"
 
 
 # --- the hold worker: one thread for every change, nothing in between (review 19.11.2026) ------------

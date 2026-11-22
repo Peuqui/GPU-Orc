@@ -132,7 +132,7 @@ def test_hold_and_let_go(quiet_url: str) -> None:
     requested = body["hold"]
     assert status == 200 and (requested["owner"], requested["reason"], requested["state"]) == ("game", "gaming", "requested")
     assert requested["free"] is None and requested["model"] is None and requested["model_server"] is None
-    assert requested["granted_by"] is None
+    assert requested["granted_by"] is None and requested["end_requested_by"] is None
     hold = held_over_http(url)
     assert (hold["owner"], hold["since"], hold["state"]) == ("game", requested["since"], "active")
     assert "free" in hold and hold["free"]["free"] is True
@@ -169,6 +169,39 @@ def test_a_grant_answers_404_without_a_hold_and_409_for_another_owner(url: str) 
 ])
 def test_a_grant_needs_an_owner_and_a_by(url: str, body: Any) -> None:
     assert call(f"{url}/hold/grant", "POST", body)[0] == 400
+
+
+def test_an_end_request_marks_an_active_hold_over_http(quiet_url: str) -> None:
+    url = quiet_url
+    call(f"{url}/hold", "POST", {"owner": "game", "reason": "gaming", "model": None})
+    hold = held_over_http(url)
+    status, body = call(f"{url}/hold/end", "POST", {"owner": "game", "by": "peuqui"})
+    assert status == 200 and body == {"hold": {**hold, "end_requested_by": "peuqui"}}
+    assert held_over_http(url)["end_requested_by"] == "peuqui"
+    assert call(f"{url}/hold/end", "POST", {"owner": "game", "by": "other"})[1] == body
+    assert call(f"{url}/hold", "DELETE", {"owner": "game"}) == (200, {"hold": None})
+
+
+def test_an_end_request_withdraws_a_requested_hold_over_http(url: str) -> None:
+    call(f"{url}/hold", "POST", {"owner": "game", "reason": "gaming", "model": None})
+    assert call(f"{url}/loading")[1]["hold_requested"] is not None
+    assert call(f"{url}/hold/end", "POST", {"owner": "game", "by": "peuqui"}) == (200, {"hold": None})
+    assert call(f"{url}/loading") == (200, {"loading": [], "held": None, "hold_requested": None})
+
+
+def test_an_end_request_answers_404_without_a_hold_and_409_for_another_owner(url: str) -> None:
+    assert call(f"{url}/hold/end", "POST", {"owner": "game", "by": "peuqui"})[0] == 404
+    call(f"{url}/hold", "POST", {"owner": "game", "reason": "gaming", "model": None})
+    status, body = call(f"{url}/hold/end", "POST", {"owner": "render", "by": "peuqui"})
+    assert status == 409 and body["owner"] == "game" and body["state"] == "requested"
+
+
+@pytest.mark.parametrize("body", [
+    None, {}, {"owner": "o"}, {"by": "p"}, {"owner": "", "by": "p"}, {"owner": "o", "by": ""}, {"owner": "o", "by": 3},
+    {"owner": "o", "by": "p", "x": 1},
+])
+def test_an_end_request_needs_an_owner_and_a_by(url: str, body: Any) -> None:
+    assert call(f"{url}/hold/end", "POST", body)[0] == 400
 
 
 def test_a_hold_for_a_model_is_checked_and_keeps_it(url: str) -> None:

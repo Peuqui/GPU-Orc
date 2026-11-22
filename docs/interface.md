@@ -76,7 +76,7 @@ server knows of it, and for `load_grace_s` (config, default 15 s) after that `/f
 model server says so itself (`starting`). Its persistent helpers do not count, they load into their own
 room, not even when something is cleared for them. If the model server does not answer: `502`. That is no green light.
 
-### `POST /hold`, `POST /hold/grant`, `DELETE /hold` — keeping the cards for somebody
+### `POST /hold`, `POST /hold/grant`, `POST /hold/end`, `DELETE /hold` — keeping the cards for somebody
 
 ```json
 {"owner": "vllm-research", "reason": "gaming", "model": null}
@@ -84,7 +84,7 @@ room, not even when something is cleared for them. If the model server does not 
 
 Somebody keeps this machine's cards (a game, other work). The hold has an `owner` and exists once at a time.
 GPU-Orc stores it in `hold_file` (config, default `~/.local/state/gpu-orc/hold.json`; it outlasts a restart of
-GPU-Orc and of the machine). A hold file of an older format (no `model`, `model_server`, `granted_by`) keeps
+GPU-Orc and of the machine). A hold file of an older format (no `model`, `model_server`, `granted_by`, `end_requested_by`) keeps
 GPU-Orc from starting; there is no migration, remove the file.
 
 Body: exactly `owner` and `reason` (non-empty strings) and `model`, which is required as a key. `model` is a
@@ -94,12 +94,13 @@ model `400`. `model_server` (optional, only with a model) names the model server
 `POST /free`: required only with several model servers configured. The hold stores `model` and the resolved
 `model_server` (`null` without a model). Any other body: `400`.
 
-- A new hold is REQUESTED (`"state": "requested"`, `"free": null`, `"granted_by": null`), and the answer comes
+- A new hold is REQUESTED (`"state": "requested"`, `"free": null`, `"granted_by": null`, `"end_requested_by": null`), and the answer comes
   at once, showing the state at that moment; nothing is touched yet:
 
   ```json
   {"hold": {"owner": "vllm-research", "reason": "gaming", "model": null, "model_server": null,
-            "since": "2026-11-05T09:12:00+01:00", "state": "requested", "free": null, "granted_by": null}}
+            "since": "2026-11-05T09:12:00+01:00", "state": "requested", "free": null, "granted_by": null,
+            "end_requested_by": null}}
   ```
 
 - **The cards are free** when on no model server a main model is loaded or loading. A main model is a model of
@@ -143,8 +144,21 @@ count, so use **the same owner name for `/work` and `/hold`**. Whoever reports `
 while a hold is held or granted must not report that waiting as work: GPU-Orc would wait for the work to end, the
 work for the hold, and neither would move.
 
-`GET /loading` and `GET /status` carry `"held"` (the hold, only while ACTIVE) and `"hold_requested"` (the hold,
-only while REQUESTED, with `granted_by`). Whoever would put something new on a card (a describer of another
+`POST /hold/end` with `{"owner": "<owner of the hold>", "by": "<who asks for the end>"}` (both non-empty strings) is
+the person's request that the owner ends the hold. No hold: `404`. A hold of another owner: `409` (same body as
+above). A hold that is only REQUESTED has nothing on the cards, it is withdrawn at once like by `DELETE /hold`,
+GPU-Orc logs `[hold] WITHDRAWN on request of <by>: <owner> (...)` on stderr, and the answer is `{"hold": null}`.
+An ACTIVE hold stays and the cards stay locked as before; it is marked `"end_requested_by": "<by>"` in the hold
+file (it outlasts a restart), GPU-Orc logs `[hold] END REQUESTED by <by> for <owner> (...)`, and the answer is
+`{"hold": {...}}`. A second request changes nothing (the first `by` stays) and returns the hold. There is no time
+limit and no way to take a request back; the hold is gone only when the owner (or a forced `DELETE /hold`) lets
+go. GPU-Orc tells nobody: **whoever holds for long asks between its steps** (client `hold_continues(owner)`,
+shell `python3 gpu_orc_client.py --url http://localhost:5070 hold-continues <owner>`, exit `0` the hold goes on,
+`1` stop, `2` GPU-Orc could not be asked, which says nothing about the hold). On `1` it ends its work cleanly,
+clears its cards and lets go itself with `DELETE /hold`; the hold is also over for it when it is gone altogether.
+
+`GET /loading` and `GET /status` carry `"held"` (the hold, only while ACTIVE, with `end_requested_by`) and
+`"hold_requested"` (the hold, only while REQUESTED, with `granted_by`). Whoever would put something new on a card (a describer of another
 machine, a TTS container started from there) leaves the cards alone while `held` is set. GPU-Orc ends nothing a
 caller loads without asking.
 

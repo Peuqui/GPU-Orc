@@ -32,7 +32,10 @@ cards, instead of every caller carrying its own copy of that logic.
   as no main model is loaded or loading on a model server any more (at once when they are free, else it looks
   again every `hold_check_interval_s`). A person can grant a waiting hold (`POST /hold/grant {"owner", "by"}`):
   it clears although a main model is loaded, but only once no work of others is reported (`/work`), so a running
-  answer is never broken off; the grant lives in the hold file. Callers wait for it with `hold_and_wait`. The
+  answer is never broken off; the grant lives in the hold file. Callers wait for it with `hold_and_wait`. A person
+  asks for the end of a hold with `POST /hold/end {"owner", "by"}`: a requested hold is withdrawn at once, an active
+  one only gets the note `end_requested_by` and stays; the owner asks for that note between its steps
+  (`hold_continues`, shell `hold-continues`), stops cleanly and lets go itself; GPU-Orc tells nobody. The
   work of the owner itself does not count, so use **the same owner name for `/work` and `/hold`**. While the hold is active, `GET /loading` (`held`) and `GET /status` say
   so, and callers that would start something put nothing new on the cards; a requested hold shows as
   `hold_requested`. The hold lives in `hold_file` and outlasts a restart; GPU-Orc ends nothing a caller loads
@@ -61,6 +64,7 @@ cards, instead of every caller carrying its own copy of that logic.
 | `POST /free` | free GPUs: `{"gpus": [0, "GPU-…"] \| "all", ...}` or `{"model": "<name>", ...}` |
 | `POST /hold` | hold the cards for somebody: `{"owner": "...", "reason": "...", "model": "..." or null}`; answers at once with the requested hold, which turns active once no main model is loaded or loading (the requested model may run); another owner: 409 |
 | `POST /hold/grant` | a person grants a waiting hold: `{"owner": "...", "by": "..."}`; it clears once no work of others runs; no hold: 404, another owner: 409 |
+| `POST /hold/end` | a person asks the owner to end the hold: `{"owner": "...", "by": "..."}`; a requested hold is withdrawn at once, an active one is marked `end_requested_by` and stays; no hold: 404, another owner: 409 |
 | `DELETE /hold` | the owner lets go: `{"owner": "...", "force": false}`; another owner: 409, `"force": true` overrides |
 | `GET /work` | the jobs reported right now (answers at once) |
 | `POST /work` | report a job, or renew its lease: `{"owner": "...", "reason": "...", "ttl_s": 60}` |
@@ -85,7 +89,7 @@ GPU-Orc refuses to start on a non-loopback address without a token file.
 
 The protocol is written down once per language, in `clients/`, and tested against the real server (`tests/test_client_python.py`, `tests/test_client_js.py`):
 
-- `clients/python/gpu_orc_client.py`: standard library only (`GpuOrc`, `FreeResult.problems()`, `TrafficLight.red`, `hold`, `grant_hold`, `hold_and_wait` and work calls).
+- `clients/python/gpu_orc_client.py`: standard library only (`GpuOrc`, `FreeResult.problems()`, `TrafficLight.red`, `hold`, `grant_hold`, `request_hold_end`, `hold_and_wait`, `hold_continues` and work calls; as a shell command `python3 gpu_orc_client.py --url URL hold-continues OWNER` exits 0 while the owner's hold goes on, 1 to stop, 2 when GPU-Orc cannot be asked).
 - `clients/js/gpu-orc-client.js`: no dependencies (`freeForModel`, `loading`), Node 18+.
 
 The programs hold byte-identical copies. `clients/consumers.json` lists them; `python scripts/sync_clients.py` writes them (`--check` changes nothing and exits 1 for a stale or missing copy, `--only NAME` for one program, `--repos DIR` for the folder holding the repos, default: the parent of this one, so a sync can go into worktrees first). Edit the clients only here, never in a copy.

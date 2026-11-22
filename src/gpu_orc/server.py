@@ -1,5 +1,6 @@
-"""HTTP interface: GET /health, GET /status, GET /loading, GET /work, POST /free, POST and DELETE /hold, POST /hold/grant, POST /work,
-DELETE /work/<owner> (standard library server, one thread per request)."""
+"""HTTP interface: GET /health, GET /status, GET /loading, GET /work, POST /free, POST and DELETE /hold,
+POST /hold/grant, POST /hold/end, POST /work, DELETE /work/<owner> (standard library server, one thread per
+request)."""
 
 from __future__ import annotations
 
@@ -65,6 +66,8 @@ class Handler(BaseHTTPRequestHandler):
             parse, act = parse_hold_request, lambda request: self.server.orchestrator.hold(*request)
         elif self.path == "/hold/grant":
             parse, act = parse_grant_request, lambda request: self.server.orchestrator.grant_hold(*request)
+        elif self.path == "/hold/end":
+            parse, act = parse_end_request, lambda request: self.server.orchestrator.request_hold_end(*request)
         elif self.path == "/work":
             parse, act = parse_work_request, lambda request: self.server.orchestrator.begin_work(*request)
         else:
@@ -172,6 +175,14 @@ def parse_grant_request(body: Any) -> tuple[str, str]:
     if not isinstance(body, dict) or set(body) != {"owner", "by"} \
             or not all(isinstance(body[key], str) and body[key].strip() for key in body):
         raise RequestError('body: {"owner": "<owner of the hold>", "by": "<who grants it>"}')
+    return body["owner"].strip(), body["by"].strip()
+
+
+def parse_end_request(body: Any) -> tuple[str, str]:
+    """``POST /hold/end``: ``{"owner": "<owner of the hold>", "by": "<who asks for the end>"}``."""
+    if not isinstance(body, dict) or set(body) != {"owner", "by"} \
+            or not all(isinstance(body[key], str) and body[key].strip() for key in body):
+        raise RequestError('body: {"owner": "<owner of the hold>", "by": "<who asks for the end>"}')
     return body["owner"].strip(), body["by"].strip()
 
 

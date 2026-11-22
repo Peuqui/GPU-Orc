@@ -68,7 +68,7 @@ Abhängigkeit. Asynchrone Aufrufer (HaemoTrace, AIfred) rufen sie über `asyncio
   die Liste der Texte, die heute jeder selbst baut (Ergebnisse außer `released`, `released_forced`, `kept`; „nicht
   frei“).
 - `loading()` gibt `TrafficLight` (`loading`, `held`, `red`).
-- `hold(owner, reason, model, model_server=None)`, `grant_hold(owner, by)`, `hold_and_wait(owner, reason, model, poll_s, timeout_s)` (`timeout_s=None` wartet ohne Frist), `release_hold(owner, force)` (seit 0.11.0, siehe docs/interface.md), `work_begin(owner, reason, ttl_s)`, `work_end(owner)`, `status()`.
+- `hold(owner, reason, model, model_server=None)`, `grant_hold(owner, by)`, `request_hold_end(owner, by)`, `hold_continues(owner)`, `hold_and_wait(owner, reason, model, poll_s, timeout_s)` (`timeout_s=None` wartet ohne Frist), `release_hold(owner, force)` (seit 0.11.0, siehe docs/interface.md), `work_begin(owner, reason, ttl_s)`, `work_end(owner)`, `status()`.
 - Ein Fehler (nicht erreichbar, falsche Antwort) ist `GpuOrcError`. Ob der Aufrufer dann trotzdem lädt (AIfred,
   PharmaLens, HaemoTrace) oder ablehnt (Suiten), entscheidet er selbst, wie heute.
 

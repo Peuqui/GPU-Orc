@@ -6,7 +6,10 @@ orchestrator cleared the cards once no main model was loaded or loading on any m
 person granted the hold, ``POST /hold/grant``), and ``GET /loading`` says so, so the callers that would put something new on the cards (a describer
 of another machine, a TTS container started from elsewhere) leave them alone. GPU-Orc ends nothing itself:
 what a caller loads without asking still loads. Only one hold exists at a time. The hold lives in a file, so
-it outlasts a restart of GPU-Orc and of the machine; only ``DELETE /hold`` ends it.
+it outlasts a restart of GPU-Orc and of the machine; only ``DELETE /hold`` ends it. A person who wants an
+active hold to end asks for it (``POST /hold/end``): the hold only gets the note ``end_requested_by`` and
+stays; the owner, who asks for that note between its steps, stops its work and lets go itself. A requested hold
+has nothing on the cards yet, so that request withdraws it at once.
 """
 
 from __future__ import annotations
@@ -50,11 +53,13 @@ class Hold:
     state: HoldState
     free: dict[str, Any] | None = None  # the /free that cleared the cards, as it ended; None while requested
     granted_by: str | None = None  # who granted the requested hold by hand (``POST /hold/grant``); None if nobody
+    end_requested_by: str | None = None  # who asked the owner of the active hold to end it (``POST /hold/end``)
 
     def as_json(self) -> dict[str, Any]:
         return {
             "owner": self.owner, "reason": self.reason, "model": self.model, "model_server": self.model_server,
             "since": self.since, "state": self.state, "free": self.free, "granted_by": self.granted_by,
+            "end_requested_by": self.end_requested_by,
         }
 
 
@@ -104,6 +109,25 @@ class HoldStore:
                 return self._hold
             return self._write(replace(self._hold, granted_by=by))
 
+    def request_end(self, owner: str, by: str) -> Hold | None:
+        """The person ``by`` asks ``owner`` to end the hold. A requested hold has nothing on the cards, it is
+        withdrawn like in ``release`` and returned (state REQUESTED, no longer the hold of the store); an
+        active hold is marked ``end_requested_by`` and returned (a copy replaces it, the first request stays);
+        None when there is no hold. Raises HoldConflict when the hold belongs to somebody else."""
+        with self._lock:
+            hold = self._hold
+            if hold is None:
+                return None
+            if hold.owner != owner:
+                raise HoldConflict(hold)
+            if hold.state == REQUESTED:
+                self._path.unlink(missing_ok=True)
+                self._hold = None
+                return hold
+            if hold.end_requested_by is not None:
+                return hold
+            return self._write(replace(hold, end_requested_by=by))
+
     def release(self, owner: str, force: bool) -> Hold | None:
         """Let go of the hold (a requested one is withdrawn); returns the hold let go of, None when there
         was none. Raises HoldConflict when it belongs to somebody else and ``force`` is not set."""
@@ -144,9 +168,12 @@ class HoldStore:
             granted_by = data["granted_by"]
             if granted_by is not None and not isinstance(granted_by, str):
                 raise ValueError("granted_by is a name or null")
+            end_requested_by = data["end_requested_by"]
+            if end_requested_by is not None and not isinstance(end_requested_by, str):
+                raise ValueError("end_requested_by is a name or null")
             return Hold(
                 str(data["owner"]), str(data["reason"]), model, model_server, str(data["since"]), state, free,
-                granted_by,
+                granted_by, end_requested_by,
             )
         except (ValueError, KeyError, TypeError) as error:
             raise HoldFileError(f"the hold file {self._path} is malformed: {error!r}") from error

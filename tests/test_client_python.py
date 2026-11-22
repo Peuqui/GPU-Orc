@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -19,7 +20,17 @@ from gpu_orc.gpus import NVIDIA_SMI_TIMEOUT_S
 from gpu_orc.http_json import REQUEST_TIMEOUT_S
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "clients" / "python"))
-from gpu_orc_client import LOADING_TIMEOUT_S, STATUS_TIMEOUT_S, GpuOrc, GpuOrcError
+from gpu_orc_client import (
+    EXIT_CONTINUE,
+    EXIT_NOT_ASKED,
+    EXIT_STOP,
+    LOADING_TIMEOUT_S,
+    STATUS_TIMEOUT_S,
+    GpuOrc,
+    GpuOrcError,
+)
+
+CLIENT_SCRIPT = Path(__file__).parent.parent / "clients" / "python" / "gpu_orc_client.py"
 
 
 @pytest.fixture
@@ -94,7 +105,8 @@ def test_hold_with_a_loaded_main_model_is_requested_and_the_light_stays_green() 
     with serving(machine()) as port:
         orc = GpuOrc(f"http://127.0.0.1:{port}")
         hold = orc.hold("game", "gaming", None)
-        assert (hold.state, hold.model, hold.model_server, hold.granted_by) == ("requested", None, None, None)
+        assert (hold.state, hold.model, hold.model_server, hold.granted_by, hold.end_requested_by) == (
+            "requested", None, None, None, None)
         time.sleep(0.2)
         light = orc.loading()
         assert not light.red and light.hold_requested == hold and light.held is None
@@ -185,6 +197,83 @@ def test_another_owner_and_force_over_the_client() -> None:
             orc.release_hold("render")
         orc.release_hold("person", force=True)
         assert orc.loading().held is None
+
+
+def test_request_hold_end_marks_an_active_hold_and_withdraws_a_requested_one() -> None:
+    with serving(machine()) as port:
+        orc = GpuOrc(f"http://127.0.0.1:{port}")
+        orc.hold("game", "gaming", None)  # a main model is loaded: stays requested
+        assert orc.request_hold_end("game", "peuqui") is None
+        assert orc.loading().hold_requested is None and not orc.hold_continues("game")
+        orc.hold_and_wait("game", "gaming", "big", poll_s=0.05, timeout_s=5)
+        marked = orc.request_hold_end("game", "peuqui")
+        assert marked is not None and (marked.state, marked.end_requested_by) == ("active", "peuqui")
+        assert orc.loading().held == marked  # the cards stay locked
+        assert orc.request_hold_end("game", "other person") == marked  # the first one stays
+
+
+def test_request_hold_end_errors_over_the_client() -> None:
+    with serving(machine()) as port:
+        orc = GpuOrc(f"http://127.0.0.1:{port}")
+        with pytest.raises(GpuOrcError, match="HTTP 404"):
+            orc.request_hold_end("game", "peuqui")
+        orc.hold("game", "gaming", None)
+        with pytest.raises(GpuOrcError, match="HTTP 409"):
+            orc.request_hold_end("render", "peuqui")
+
+
+def test_hold_continues_while_requested_or_active_and_stops_on_an_end_request_or_a_lost_hold() -> None:
+    with serving(machine()) as port:
+        orc = GpuOrc(f"http://127.0.0.1:{port}")
+        assert not orc.hold_continues("game")  # no hold
+        orc.hold("game", "gaming", None)
+        assert orc.loading().hold_requested is not None
+        assert orc.hold_continues("game") and not orc.hold_continues("render")
+        orc.release_hold("game")
+        orc.hold_and_wait("game", "gaming", "big", poll_s=0.05, timeout_s=5)
+        assert orc.hold_continues("game") and not orc.hold_continues("render")
+        orc.request_hold_end("game", "peuqui")
+        assert not orc.hold_continues("game")  # the end is requested, the hold is still there
+        assert orc.loading().held is not None
+        orc.release_hold("game")
+        assert not orc.hold_continues("game")
+
+
+def test_hold_continues_cannot_say_when_gpu_orc_does_not_answer() -> None:
+    with pytest.raises(GpuOrcError, match="not reachable"):
+        GpuOrc("http://127.0.0.1:9").hold_continues("game")
+
+
+def run_client(*arguments: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, "-I", str(CLIENT_SCRIPT), *arguments],
+        capture_output=True, text=True, timeout=30, check=False,
+    )
+
+
+def test_hold_continues_as_a_shell_command(tmp_path: Path) -> None:
+    with serving(machine()) as port:
+        url = f"http://127.0.0.1:{port}"
+        assert run_client("--url", url, "hold-continues", "game").returncode == EXIT_STOP
+        GpuOrc(url).hold("game", "gaming", None)
+        assert run_client("--url", url, "hold-continues", "game").returncode == EXIT_CONTINUE
+        token_file = tmp_path / "token"
+        token_file.write_text("unused on loopback\n")
+        with_token = run_client("--url", url, "--token-file", str(token_file), "hold-continues", "game")
+        assert with_token.returncode == EXIT_CONTINUE
+        assert run_client("--url", url, "hold-continues", "render").returncode == EXIT_STOP
+        GpuOrc(url).release_hold("game")
+        GpuOrc(url).hold_and_wait("game", "gaming", "big", poll_s=0.05, timeout_s=5)
+        assert run_client("--url", url, "hold-continues", "game").returncode == EXIT_CONTINUE
+        GpuOrc(url).request_hold_end("game", "peuqui")
+        assert run_client("--url", url, "hold-continues", "game").returncode == EXIT_STOP
+        GpuOrc(url).release_hold("person", force=True)
+        assert run_client("--url", url, "hold-continues", "game").returncode == EXIT_STOP
+        missing = run_client("--url", url, "--token-file", str(tmp_path / "missing"), "hold-continues", "game")
+        assert missing.returncode == EXIT_NOT_ASKED and "missing" in missing.stderr
+    down = run_client("--url", "http://127.0.0.1:9", "hold-continues", "game")
+    assert down.returncode == EXIT_NOT_ASKED and "not reachable" in down.stderr
+    assert run_client("hold-continues", "game").returncode == EXIT_NOT_ASKED  # no --url
 
 
 def test_work_is_visible_in_status(orc: GpuOrc) -> None:

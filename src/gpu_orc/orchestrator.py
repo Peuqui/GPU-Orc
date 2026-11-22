@@ -130,6 +130,23 @@ class Orchestrator:
                   file=sys.stderr, flush=True)
         return {"hold": hold.as_json()}
 
+    def request_hold_end(self, owner: str, by: str) -> dict[str, Any]:
+        """The person ``by`` asks ``owner`` to end the hold. A requested hold is withdrawn at once (nothing is
+        on the cards); an active one only gets the note ``end_requested_by`` and stays, GPU-Orc tells nobody:
+        the owner asks for the note between its steps and lets go itself. Raises NotFound without a hold,
+        HoldConflict when the hold belongs to somebody else."""
+        hold = self._hold.request_end(owner, by)
+        if hold is None:
+            raise NotFound("there is no hold")
+        if hold.state == REQUESTED:
+            print(f"[hold] WITHDRAWN on request of {by!r}: {hold.owner!r} ({hold.reason!r}, since {hold.since})",
+                  file=sys.stderr, flush=True)
+            return {"hold": None}
+        if hold.end_requested_by == by:
+            print(f"[hold] END REQUESTED by {by!r} for {hold.owner!r} ({hold.reason!r}, since {hold.since})",
+                  file=sys.stderr, flush=True)
+        return {"hold": hold.as_json()}
+
     def start_hold_worker(self) -> None:
         """Start the one thread that turns a requested hold into an active one, for the life of the
         service. A hold found at start (requested before a restart) waits for its moment the same way."""
