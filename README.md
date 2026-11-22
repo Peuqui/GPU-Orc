@@ -35,7 +35,9 @@ cards, instead of every caller carrying its own copy of that logic.
   answer is never broken off; the grant lives in the hold file. Callers wait for it with `hold_and_wait`. A person
   asks for the end of a hold with `POST /hold/end {"owner", "by"}`: a requested hold is withdrawn at once, an active
   one only gets the note `end_requested_by` and stays; the owner asks for that note between its steps
-  (`hold_continues`, shell `hold-continues`), stops cleanly and lets go itself; GPU-Orc tells nobody. The
+  (`hold_continues`, shell `hold-continues`), stops cleanly and lets go itself; GPU-Orc tells nobody. When the owner lets go of such a hold, the cards stay for the person
+  who asked (a handover, `handover_grace_s`, default 120 s, in memory only): no new hold turns active until a main
+  model is loaded or loading, or the time is up; a grant overrides it; `GET /status` shows it as `handover`. The
   work of the owner itself does not count, so use **the same owner name for `/work` and `/hold`**. While the hold is active, `GET /loading` (`held`) and `GET /status` say
   so, and callers that would start something put nothing new on the cards; a requested hold shows as
   `hold_requested`. The hold lives in `hold_file` and outlasts a restart; GPU-Orc ends nothing a caller loads

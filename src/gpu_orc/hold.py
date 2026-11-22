@@ -10,6 +10,10 @@ it outlasts a restart of GPU-Orc and of the machine; only ``DELETE /hold`` ends 
 active hold to end asks for it (``POST /hold/end``): the hold only gets the note ``end_requested_by`` and
 stays; the owner, who asks for that note between its steps, stops its work and lets go itself. A requested hold
 has nothing on the cards yet, so that request withdraws it at once.
+
+When the owner of an active hold that somebody asked to end lets go, the store remembers a ``Handover`` to that
+person: a new hold must not slip in before the person could load what the cards were cleared for (the orchestrator
+decides when it is over). It lives in memory only; a restart forgets it, its time is short.
 """
 
 from __future__ import annotations
@@ -17,6 +21,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+import time
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
@@ -55,12 +60,33 @@ class Hold:
     granted_by: str | None = None  # who granted the requested hold by hand (``POST /hold/grant``); None if nobody
     end_requested_by: str | None = None  # who asked the owner of the active hold to end it (``POST /hold/end``)
 
+    @property
+    def handover_for(self) -> str | None:
+        """Who asked for the end of this hold while it was active: letting go of it hands the cards over to them."""
+        return self.end_requested_by if self.state == ACTIVE else None
+
     def as_json(self) -> dict[str, Any]:
         return {
             "owner": self.owner, "reason": self.reason, "model": self.model, "model_server": self.model_server,
             "since": self.since, "state": self.state, "free": self.free, "granted_by": self.granted_by,
             "end_requested_by": self.end_requested_by,
         }
+
+
+@dataclass(frozen=True)
+class Handover:
+    """The cards go to ``for_``, who asked the owner of the hold that just ended to let go: until it is over, no
+    hold may turn active. The time limit is ``time.monotonic()``, so it does not depend on the wall clock."""
+
+    for_: str
+    since: str  # ISO 8601 with the offset of the machine
+    deadline: float
+
+    def seconds_left(self) -> float:
+        return max(0.0, self.deadline - time.monotonic())
+
+    def as_json(self) -> dict[str, Any]:
+        return {"for": self.for_, "since": self.since, "seconds_left": round(self.seconds_left(), 1)}
 
 
 class HoldStore:
@@ -70,6 +96,7 @@ class HoldStore:
         self._path = path
         self._lock = threading.Lock()
         self._hold = self._read()
+        self._handover: Handover | None = None  # in memory only, guarded by the same lock as the hold
 
     def get(self) -> Hold | None:
         with self._lock:
@@ -128,16 +155,33 @@ class HoldStore:
                 return hold
             return self._write(replace(hold, end_requested_by=by))
 
-    def release(self, owner: str, force: bool) -> Hold | None:
+    def release(self, owner: str, force: bool, handover_grace_s: float) -> Hold | None:
         """Let go of the hold (a requested one is withdrawn); returns the hold let go of, None when there
-        was none. Raises HoldConflict when it belongs to somebody else and ``force`` is not set."""
+        was none. Raises HoldConflict when it belongs to somebody else and ``force`` is not set. An active hold
+        that somebody asked to end leaves a ``Handover`` to that person for ``handover_grace_s`` seconds; it is
+        set under the same lock as the release, so no hold requested right after can be seen without it."""
         with self._lock:
             released = self._hold
             if released is not None and released.owner != owner and not force:
                 raise HoldConflict(released)
             self._path.unlink(missing_ok=True)
             self._hold = None
+            if released is not None and released.handover_for is not None:
+                since = datetime.now().astimezone().isoformat(timespec="seconds")
+                self._handover = Handover(released.handover_for, since, time.monotonic() + handover_grace_s)
             return released
+
+    def handover(self) -> Handover | None:
+        with self._lock:
+            return self._handover
+
+    def end_handover(self, expected: Handover) -> bool:
+        """End the handover ``expected``; False when it is not the current one (somebody else ended it)."""
+        with self._lock:
+            if self._handover is not expected:
+                return False
+            self._handover = None
+            return True
 
     def _write(self, hold: Hold) -> Hold:
         self._path.parent.mkdir(parents=True, exist_ok=True)

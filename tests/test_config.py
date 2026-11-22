@@ -79,6 +79,23 @@ def test_hold_check_interval_must_be_a_number(tmp_path: Path, value: Any) -> Non
         load_config(write(tmp_path, {"consumers": CONSUMERS, "hold_check_interval_s": value}))
 
 
+def test_handover_grace_defaults_to_120_seconds_and_can_be_set(tmp_path: Path) -> None:
+    assert load_config(write(tmp_path, {"consumers": CONSUMERS})).handover_grace_s == 120.0
+    assert load_config(write(tmp_path, {"consumers": CONSUMERS, "handover_grace_s": 45})).handover_grace_s == 45.0
+
+
+@pytest.mark.parametrize("value", ["long", True, [120]])
+def test_handover_grace_must_be_a_number(tmp_path: Path, value: Any) -> None:
+    with pytest.raises(ConfigError, match="handover_grace_s has the wrong type"):
+        load_config(write(tmp_path, {"consumers": CONSUMERS, "handover_grace_s": value}))
+
+
+@pytest.mark.parametrize("value", [0, -5, 0.0])
+def test_handover_grace_must_be_positive(tmp_path: Path, value: Any) -> None:
+    with pytest.raises(ConfigError, match="handover_grace_s must be greater than 0"):
+        load_config(write(tmp_path, {"consumers": CONSUMERS, "handover_grace_s": value}))
+
+
 @pytest.mark.parametrize("value", [0, -5, 0.0])
 def test_hold_check_interval_must_be_positive(tmp_path: Path, value: Any) -> None:
     with pytest.raises(ConfigError, match="hold_check_interval_s must be greater than 0"):

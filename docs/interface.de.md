@@ -111,7 +111,7 @@ nur nötig, wenn mehrere Modellserver konfiguriert sind. Der Halt speichert `mod
 - Ein Thread in GPU-Orc, der so lange läuft wie der Dienst, macht jede Änderung des Halts. Bei einem angeforderten
   Halt prüft er, ob die Karten frei sind: sofort nach dem Anfordern (ein neuer Halt auf freien Karten wird gleich
   nach der Antwort wirksam) und dann alle `hold_check_interval_s` (Config, Standard 30 s). `POST /hold`, `POST
-  /hold/grant` und `DELETE /work/<owner>` wecken ihn. Sind die Karten frei, räumt er alle Karten wie `POST /free`
+  /hold/grant`, `DELETE /hold` (mit Übergabe, siehe `POST /hold/end`) und `DELETE /work/<owner>` wecken ihn. Sind die Karten frei, räumt er alle Karten wie `POST /free`
   mit `"gpus": "all"`, `keep` auf das angeforderte Modell (ein laufendes angefordertes Modell bleibt, im Ergebnis
   `kept`) und dem Grund `hold: <owner>: <reason>` und macht den Halt AKTIV, mit dem Räumen in `free` (`{"...": "wie
   POST /free"}`). Nur genau der Halt, für den geräumt wurde, wird aktiv: wurde er unterdessen aufgehoben (und
@@ -159,6 +159,28 @@ GPU-Orc benachrichtigt niemanden: **wer lange hält, fragt zwischen seinen Schri
 `0` der Halt geht weiter, `1` aufhören, `2` GPU-Orc war nicht zu fragen, das sagt nichts über den Halt). Bei `1`
 beendet er seine Arbeit sauber, räumt seine Karten und gibt den Halt selbst mit `DELETE /hold` frei.
 
+**Übergabe.** Der Mensch, der das Ende angefordert hat (`by`), wartet, bis der Eigentümer freigibt, und lädt dann
+etwas (AIfred: sein Modell mit `POST /free`), aber erst bei seinem nächsten Nachsehen. Fordert der frühere Eigentümer
+in der Zwischenzeit einen neuen Halt an, wären die Karten frei (der alte Halt hat sie geräumt, kein Hauptmodell ist
+geladen), der Worker machte den neuen Halt sofort aktiv, und der Mensch müsste das Ende erneut anfordern: ein
+Pingpong. Gibt der Eigentümer also einen AKTIVEN Halt mit gesetztem `end_requested_by` frei (`DELETE /hold`, mit
+oder ohne `force`), merkt sich GPU-Orc eine **Übergabe** an diesen Menschen: `[hold] HANDOVER to <by> after <owner>
+let go (until <handover_grace_s> s)` auf stderr. Solange sie gilt, **wird kein Halt aktiv**: ein neuer Halt bleibt
+ANGEFORDERT, was auch geladen ist. Sie endet (`[hold] HANDOVER to <by> ended: <Grund>`), wenn
+- der Worker auf einem Modellserver ein Hauptmodell geladen oder ladend sieht (`model loaded`; derselbe Blick wie bei
+  „die Karten sind frei“, das Modell, das der neue Halt anfordert, ausgenommen): danach wartet der neue Halt wie bei
+  jedem anderen Modell, bis es entladen ist; oder
+- `handover_grace_s` Sekunden um sind (`time is up`; Config, Standard 120), damit jemand, der nichts lädt, die Karten
+  nicht dauerhaft blockiert. Der Worker wacht dazu von selbst zum Fristende auf (er schläft nie länger als die
+  Restfrist); oder
+- jemand den wartenden Halt freigibt (`POST /hold/grant`; `granted`): der Mensch entscheidet, die Übergabe zählt dann
+  nicht.
+
+Eine Freigabe ohne Ende-Anforderung und das Zurückziehen eines nur ANGEFORDERTEN Halts hinterlassen keine Übergabe.
+Die Übergabe lebt nur im Speicher: ein Neustart vergisst sie (ihre Frist ist kurz). `GET /status` zeigt sie als
+`"handover": {"for": "<by>", "since": "<ISO 8601>", "seconds_left": 87.3}`, ohne Übergabe `null`; `GET /loading`
+trägt sie nicht.
+
 `GET /loading` und `GET /status` tragen `"held"` (der Halt, nur solange AKTIV, mit `end_requested_by`) und
 `"hold_requested"` (der Halt, nur solange ANGEFORDERT, mit `granted_by`). Wer etwas Neues auf eine Karte legen würde (ein Bildbeschreiber eines anderen
 Rechners, ein von dort gestarteter TTS-Container), lässt sie in Ruhe, solange `held` gesetzt ist. Was ein Aufrufer
@@ -197,6 +219,8 @@ Neustart lautet `30 5 * * 1,3,5 root /home/mp/.local/share/gpu-orc/venv/bin/gpu-
 {
   "queue": {"running": true, "waiting": 1, "running_since_s": 42.0},
   "held": null,
+  "hold_requested": null,
+  "handover": null,
   "work": [],
   "gpus": [
     {
@@ -219,6 +243,9 @@ Neustart lautet `30 5 * * 1,3,5 root /home/mp/.local/share/gpu-orc/venv/bin/gpu-
 
 - `queue` zeigt, ob gerade eine `/free`-Anfrage läuft, seit wie vielen Sekunden (`null`, wenn keine),
   und wie viele warten.
+- `handover` ist die Übergabe an den Menschen, der das Ende eines freigegebenen Halts angefordert hat (siehe
+  `POST /hold/end`): `{"for", "since", "seconds_left"}`, solange sie gilt, sonst `null`. Nur `/status` trägt sie, nicht
+  `/loading`.
 - `holders`: Ein Halter, der mehrere Karten sieht, steht bei jeder davon.
   - `memory_mib` steht nur da, wo der Dienst seinen Speicher selbst meldet: die TTS-Suite je Engine,
     die STT-Suite für den GPU-Worker (nicht für die Diarisierung). llama-swap meldet nur die Karten, also `null`.

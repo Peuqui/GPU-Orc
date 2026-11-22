@@ -114,14 +114,14 @@ def test_the_store_answers_the_own_hold_even_with_another_model_and_refuses_anot
     with pytest.raises(HoldConflict, match="'game' .requested"):
         store.request("render", "job", None, None)
     with pytest.raises(HoldConflict):
-        store.release("render", force=False)
+        store.release("render", force=False, handover_grace_s=60)
     assert store.get() is first
 
 
 def test_only_the_very_hold_cleared_for_turns_active(tmp_path: Path) -> None:
     store = HoldStore(tmp_path / "hold.json")
     cleared_for = store.request("game", "gaming", None, None)
-    store.release("game", force=False)
+    store.release("game", force=False, handover_grace_s=60)
     again = store.request("game", "gaming", None, None)  # same owner and reason, maybe the same second: another hold
     assert store.activate(cleared_for, FREE_RESULT) is None
     assert store.get() is again and again.state == "requested"
@@ -182,7 +182,7 @@ def test_letting_go_removes_the_file(tmp_path: Path) -> None:
     path = tmp_path / "hold.json"
     store = HoldStore(path)
     requested = store.request("game", "game", None, None)
-    assert store.release("game", force=False) is requested
+    assert store.release("game", force=False, handover_grace_s=60) is requested
     assert store.get() is None and not path.exists() and HoldStore(path).get() is None
 
 
@@ -225,7 +225,7 @@ def test_a_grant_does_not_carry_over_to_a_hold_requested_anew(tmp_path: Path) ->
     store = HoldStore(tmp_path / "hold.json")
     store.request("game", "gaming", None, None)
     store.grant("game", "peuqui")
-    store.release("game", force=False)
+    store.release("game", force=False, handover_grace_s=60)
     assert store.request("game", "gaming", None, None).granted_by is None
 
 
@@ -269,7 +269,7 @@ def test_an_end_request_does_not_carry_over_to_a_hold_requested_anew(tmp_path: P
     store = HoldStore(tmp_path / "hold.json")
     store.activate(store.request("game", "gaming", None, None), FREE_RESULT)
     store.request_end("game", "peuqui")
-    store.release("game", force=False)
+    store.release("game", force=False, handover_grace_s=60)
     assert store.request("game", "gaming", None, None).end_requested_by is None
 
 
@@ -317,7 +317,7 @@ def test_the_requested_hold_activates_after_the_interval_when_the_main_model_is_
 def test_the_worker_looks_again_only_after_the_interval(monkeypatch: pytest.MonkeyPatch) -> None:
     llama = server(model("big", GPUS[0].uuid))
     orchestrator = make(llama, hold_check_interval_s=30.0)
-    looks = record_calls(monkeypatch, orchestrator, "_cards_free")
+    looks = record_calls(monkeypatch, orchestrator, "_busy_models")
     orchestrator.start_hold_worker()
     ask(orchestrator)
     time.sleep(0.5)
@@ -690,6 +690,161 @@ def test_an_end_request_outlasts_a_restart(tmp_path: Path) -> None:
     first.request_hold_end("game", "peuqui")
     restarted = make(server(), hold_file=path)
     assert restarted.loading()["held"]["end_requested_by"] == "peuqui"
+
+
+# --- the handover after a requested end ----------------------------------------------------------
+
+
+def ended_on_request(orchestrator: Orchestrator, by: str = "peuqui", owner: str = "game") -> None:
+    """An active hold of ``owner`` that ``by`` asked to end, and that the owner lets go of."""
+    ask(orchestrator, owner)
+    active(orchestrator)
+    orchestrator.request_hold_end(owner, by)
+    orchestrator.release_hold(owner, force=False)
+
+
+def test_the_store_leaves_a_handover_only_for_an_active_hold_with_an_end_request(tmp_path: Path) -> None:
+    store = HoldStore(tmp_path / "hold.json")
+    store.request("game", "gaming", None, None)
+    store.release("game", force=False, handover_grace_s=60)
+    assert store.handover() is None  # only requested
+
+    store.activate(store.request("game", "gaming", None, None), FREE_RESULT)
+    store.release("game", force=False, handover_grace_s=60)
+    assert store.handover() is None  # nobody asked for the end
+
+    store.activate(store.request("game", "gaming", None, None), FREE_RESULT)
+    store.request_end("game", "peuqui")
+    store.release("game", force=False, handover_grace_s=60)
+    handover = store.handover()
+    assert handover is not None and handover.for_ == "peuqui" and 59 < handover.seconds_left() <= 60
+    assert store.end_handover(handover) and store.handover() is None and not store.end_handover(handover)
+
+
+def test_a_new_hold_stays_requested_during_a_handover_although_no_main_model_runs(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    orchestrator = started(server(), handover_grace_s=30.0)
+    ended_on_request(orchestrator)
+    assert "[hold] HANDOVER to 'peuqui' after 'game' let go (until 30 s)" in capsys.readouterr().err
+    ask(orchestrator)  # the former owner asks again at once; the cards are free
+    assert stays_requested(orchestrator) is not None
+    handover = orchestrator.status()["handover"]
+    assert handover["for"] == "peuqui" and 0 < handover["seconds_left"] <= 30
+
+
+def test_the_handover_ends_when_a_main_model_is_loaded_and_the_new_hold_waits_for_it_to_go(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    llama = server()
+    orchestrator = started(llama, handover_grace_s=30.0)
+    ended_on_request(orchestrator)
+    ask(orchestrator)
+    assert stays_requested(orchestrator) is not None
+    llama.held.append(model("big", GPUS[0].uuid))  # the person loads its model
+    wait_for(lambda: orchestrator.status()["handover"] is None)
+    assert "[hold] HANDOVER to 'peuqui' ended: model loaded" in capsys.readouterr().err
+    assert stays_requested(orchestrator) is not None  # as before: waits until the model is gone
+    llama.held.clear()
+    active(orchestrator)
+
+
+def test_the_handover_ends_when_a_main_model_is_loading() -> None:
+    llama = server()
+    orchestrator = started(llama, handover_grace_s=30.0)
+    ended_on_request(orchestrator)
+    ask(orchestrator)
+    llama.starting = ("small-vlm",)
+    wait_for(lambda: orchestrator.status()["handover"] is None)
+    assert stays_requested(orchestrator) is not None
+
+
+def test_the_handover_ends_by_itself_when_its_time_is_up_and_the_worker_wakes_at_that_moment(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    orchestrator = started(server(), hold_check_interval_s=30.0, handover_grace_s=0.5)  # the interval is far longer
+    ended_on_request(orchestrator)
+    ask(orchestrator)
+    assert stays_requested(orchestrator, 0.2) is not None
+    started_at = time.monotonic()
+    active(orchestrator)
+    assert time.monotonic() - started_at < 5 and orchestrator.status()["handover"] is None
+    assert "[hold] HANDOVER to 'peuqui' ended: time is up" in capsys.readouterr().err
+
+
+def test_a_handover_without_a_waiting_hold_ends_at_its_time_by_itself(capsys: pytest.CaptureFixture[str]) -> None:
+    orchestrator = started(server(), hold_check_interval_s=30.0, handover_grace_s=0.3)
+    ended_on_request(orchestrator)
+    assert orchestrator.status()["handover"] is not None
+    wait_for(lambda: orchestrator.status()["handover"] is None)
+    assert "ended: time is up" in capsys.readouterr().err
+    ask(orchestrator)
+    active(orchestrator)
+
+
+def test_a_release_without_an_end_request_leaves_no_handover_and_the_next_hold_turns_active() -> None:
+    orchestrator = started(server())
+    ask(orchestrator)
+    active(orchestrator)
+    orchestrator.release_hold("game", force=False)
+    assert orchestrator.status()["handover"] is None
+    ask(orchestrator)
+    active(orchestrator)
+
+
+def test_the_release_of_a_requested_hold_leaves_no_handover(capsys: pytest.CaptureFixture[str]) -> None:
+    orchestrator = started(server(model("big", GPUS[0].uuid)))
+    ask(orchestrator)
+    assert stays_requested(orchestrator) is not None
+    orchestrator.release_hold("game", force=False)
+    assert orchestrator.status()["handover"] is None and "HANDOVER" not in capsys.readouterr().err
+
+
+def test_the_withdrawal_by_an_end_request_leaves_no_handover() -> None:
+    orchestrator = started(server(model("big", GPUS[0].uuid)))
+    ask(orchestrator)
+    assert stays_requested(orchestrator) is not None
+    orchestrator.request_hold_end("game", "peuqui")
+    assert orchestrator.status()["handover"] is None
+
+
+def test_a_forced_release_with_an_end_request_leaves_a_handover() -> None:
+    orchestrator = started(server())
+    ask(orchestrator)
+    active(orchestrator)
+    orchestrator.request_hold_end("game", "peuqui")
+    orchestrator.release_hold("render", force=True)
+    assert orchestrator.status()["handover"]["for"] == "peuqui"
+    ask(orchestrator, "render")
+    assert stays_requested(orchestrator) is not None
+
+
+def test_a_grant_overrides_the_handover(capsys: pytest.CaptureFixture[str]) -> None:
+    orchestrator = started(server(), handover_grace_s=30.0)
+    ended_on_request(orchestrator)
+    ask(orchestrator)
+    assert stays_requested(orchestrator) is not None
+    orchestrator.grant_hold("game", "peuqui")
+    active(orchestrator)
+    assert orchestrator.status()["handover"] is None
+    assert "[hold] HANDOVER to 'peuqui' ended: granted" in capsys.readouterr().err
+
+
+def test_the_handover_is_in_the_status_only_and_the_light_keeps_its_keys() -> None:
+    orchestrator = started(server(), handover_grace_s=30.0)
+    assert orchestrator.status()["handover"] is None
+    ended_on_request(orchestrator)
+    handover = orchestrator.status()["handover"]
+    assert set(handover) == {"for", "since", "seconds_left"} and isinstance(handover["seconds_left"], float)
+    assert set(orchestrator.loading()) == {"loading", "held", "hold_requested"}
+
+
+def test_a_handover_is_forgotten_by_a_restart(tmp_path: Path) -> None:
+    path = tmp_path / "hold.json"
+    first = started(server(), hold_file=path)
+    ended_on_request(first)
+    assert first.status()["handover"] is not None
+    assert make(server(), hold_file=path).status()["handover"] is None
 
 
 # --- the hold worker: one thread for every change, nothing in between (review 19.11.2026) ------------

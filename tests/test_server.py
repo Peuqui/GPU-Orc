@@ -54,6 +54,19 @@ def test_status(url: str) -> None:
     assert status == 200 and len(body["gpus"]) == 3 and body["errors"] == []
 
 
+def test_status_carries_the_handover_and_loading_does_not(quiet_url: str) -> None:
+    url = quiet_url
+    assert call(f"{url}/status")[1]["handover"] is None
+    call(f"{url}/hold", "POST", {"owner": "game", "reason": "gaming", "model": None})
+    held_over_http(url)
+    call(f"{url}/hold/end", "POST", {"owner": "game", "by": "peuqui"})
+    assert call(f"{url}/hold", "DELETE", {"owner": "game"}) == (200, {"hold": None})
+    handover = call(f"{url}/status")[1]["handover"]
+    assert set(handover) == {"for", "since", "seconds_left"} and handover["for"] == "peuqui"
+    assert 0 < handover["seconds_left"] <= 120
+    assert call(f"{url}/loading") == (200, {"loading": [], "held": None, "hold_requested": None})
+
+
 def test_loading(url: str) -> None:
     assert call(f"{url}/loading") == (200, {"loading": [], "held": None, "hold_requested": None})
 

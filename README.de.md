@@ -36,7 +36,11 @@ Karten freiräumt, statt dass jeder Aufrufer eine eigene Kopie dieser Logik mitb
   `hold_check_interval_s` erneut). Ein Mensch kann einen wartenden Halt freigeben (`POST /hold/grant {"owner",
   "by"}`): Er räumt dann trotz geladenem Hauptmodell, aber erst, wenn keine Arbeit anderer gemeldet ist (`/work`),
   eine laufende Antwort wird also nie abgebrochen; die Freigabe steht in der Hold-Datei und übersteht einen
-  Neustart. Aufrufer warten darauf mit `hold_and_wait`. Die Arbeit des Eigentümers selbst zählt nicht: für
+  Neustart. Aufrufer warten darauf mit `hold_and_wait`. Ein Mensch fordert das Ende eines Halts mit `POST
+  /hold/end {"owner", "by"}` an (ein aktiver Halt bekommt nur die Notiz `end_requested_by`, der Eigentümer gibt ihn
+  selbst frei). Gibt er ihn frei, bleiben die Karten für den, der gefragt hat (Übergabe, `handover_grace_s`,
+  Standard 120 s, nur im Speicher): kein neuer Halt wird aktiv, bis ein Hauptmodell geladen ist oder lädt oder die
+  Zeit um ist; eine Freigabe (Grant) übergeht sie; `GET /status` zeigt sie als `handover`. Die Arbeit des Eigentümers selbst zählt nicht: für
   `/work` und `/hold` **denselben Eigentümernamen** benutzen. Solange der Halt aktiv ist, melden `GET /loading` (`held`) und `GET /status` ihn,
   und Aufrufer, die etwas starten würden, legen nichts Neues auf die Karten; ein angeforderter Halt steht als
   `hold_requested` da. Der Halt liegt in `hold_file` und übersteht einen Neustart; was ein Aufrufer lädt, ohne

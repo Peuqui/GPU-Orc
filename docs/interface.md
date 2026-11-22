@@ -110,8 +110,8 @@ model `400`. `model_server` (optional, only with a model) names the model server
   not free; GPU-Orc says so once on stderr per change, not at every look.
 - One thread in GPU-Orc, running as long as the service, makes every change of the hold. For a requested hold it
   looks whether the cards are free, at once when asked (a new hold on free cards turns active right after the
-  answer) and then every `hold_check_interval_s` (config, default 30 s). `POST /hold`, `POST /hold/grant` and
-  `DELETE /work/<owner>` wake it. When the cards are free it clears every card like `POST /free` with
+  answer) and then every `hold_check_interval_s` (config, default 30 s). `POST /hold`, `POST /hold/grant`, `DELETE /hold` (with a handover, see
+  `POST /hold/end`) and `DELETE /work/<owner>` wake it. When the cards are free it clears every card like `POST /free` with
   `"gpus": "all"`, `keep` set to the requested model (a running requested model stays: it is `kept` in the
   result) and a reason `hold: <owner>: <reason>`, and makes the hold ACTIVE with that clearing in `free`
   (`{"...": "as POST /free"}`). Only the very hold the cards were cleared for turns active: released (and maybe
@@ -157,6 +157,28 @@ shell `python3 gpu_orc_client.py --url http://localhost:5070 hold-continues <own
 `1` stop, `2` GPU-Orc could not be asked, which says nothing about the hold). On `1` it ends its work cleanly,
 clears its cards and lets go itself with `DELETE /hold`; the hold is also over for it when it is gone altogether.
 
+**Handover.** The person who asked for the end (`by`) waits for the owner to let go and then loads something
+(AIfred: its model, with `POST /free`), but only at its next look. If the former owner asked for a new hold in
+between, the cards would be free (the old hold cleared them, no main model is loaded), the worker would turn the new
+hold active at once, and the person would have to ask for the end again: a ping-pong. So when the owner lets go of
+an ACTIVE hold with `end_requested_by` set (`DELETE /hold`, with or without `force`), GPU-Orc remembers a
+**handover** to that person: `[hold] HANDOVER to <by> after <owner> let go (until <handover_grace_s> s)` on stderr.
+While it stands, **no hold turns active**: a new hold stays REQUESTED, whatever is loaded. It ends
+(`[hold] HANDOVER to <by> ended: <reason>`) when
+- the worker sees on a model server a main model loaded or loading (`model loaded`; the same look as for "the cards
+  are free", with the model the new hold asks for left out): from then on the new hold waits for that model to go
+  like for any other; or
+- `handover_grace_s` seconds are over (`time is up`; config, default 120), so that somebody who loads nothing does
+  not keep the cards for ever. The worker wakes at that moment by itself (it sleeps no longer than the rest of the
+  time); or
+- somebody grants the waiting hold (`POST /hold/grant`; `granted`): the person decides, the handover does not
+  matter then.
+
+A release without an end request, and the withdrawal of a hold that is only REQUESTED, leave no handover. The
+handover lives in memory only: a restart forgets it (its time is short anyway). `GET /status` shows it as
+`"handover": {"for": "<by>", "since": "<ISO 8601>", "seconds_left": 87.3}`, `null` without one; `GET /loading` does
+not carry it.
+
 `GET /loading` and `GET /status` carry `"held"` (the hold, only while ACTIVE, with `end_requested_by`) and
 `"hold_requested"` (the hold, only while REQUESTED, with `granted_by`). Whoever would put something new on a card (a describer of another
 machine, a TTS container started from there) leaves the cards alone while `held` is set. GPU-Orc ends nothing a
@@ -194,6 +216,8 @@ command too and exits 3 with a message on stderr. The weekly reboot is
 {
   "queue": {"running": true, "waiting": 1, "running_since_s": 42.0},
   "held": null,
+  "hold_requested": null,
+  "handover": null,
   "work": [],
   "gpus": [
     {
@@ -216,6 +240,8 @@ command too and exits 3 with a message on stderr. The weekly reboot is
 
 - `queue` shows whether a `/free` request is running, for how many seconds (`null` if none), and how
   many wait.
+- `handover` is the handover to the person who asked for the end of a hold that was let go of (see `POST /hold/end`):
+  `{"for", "since", "seconds_left"}` while it stands, else `null`. Only `/status` carries it, not `/loading`.
 - `holders`: A holder that sees several GPUs is listed with each of them.
   - `memory_mib` is only there where the service reports its memory itself: the TTS-Suite per engine,
     the STT-Suite for the GPU worker (not for diarization). llama-swap reports only the GPUs, so `null`.

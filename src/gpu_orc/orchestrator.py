@@ -15,7 +15,7 @@ from typing import Any, Literal, NoReturn
 
 from .gate import FifoGate
 from .gpus import Gpu, GpuSpecError, query_gpus, resolve_gpu
-from .hold import ACTIVE, REQUESTED, Hold, HoldStore
+from .hold import ACTIVE, REQUESTED, Handover, Hold, HoldStore
 from .model import Action, Consumer, ConsumerError, Holder, ModelServer, UnknownModel
 from .verify import DEFAULT_VERIFY, StillHeld, VerifySettings, verify
 from .work import WorkStore
@@ -26,6 +26,8 @@ CALLER_MARGIN_S = 30.0
 DEFAULT_LOAD_GRACE_S = 15.0
 # How often the hold worker looks again whether a requested hold may clear the cards.
 DEFAULT_HOLD_CHECK_INTERVAL_S = 30.0
+# How long the cards stay for the person who asked an owner to end its hold, after the owner let go.
+DEFAULT_HANDOVER_GRACE_S = 120.0
 
 
 class RequestError(ValueError):
@@ -65,6 +67,7 @@ class Orchestrator:
         verify_settings: VerifySettings = DEFAULT_VERIFY,
         load_grace_s: float = DEFAULT_LOAD_GRACE_S,
         hold_check_interval_s: float = DEFAULT_HOLD_CHECK_INTERVAL_S,
+        handover_grace_s: float = DEFAULT_HANDOVER_GRACE_S,
         *,
         hold: HoldStore,
         work: WorkStore,
@@ -74,6 +77,7 @@ class Orchestrator:
         self._hold_worker: threading.Thread | None = None
         self._hold_wake = threading.Event()
         self._hold_check_interval_s = hold_check_interval_s
+        self._handover_grace_s = handover_grace_s
         self._cards_note: str | None = None  # what the worker last reported about a model server it cannot ask
         self._work = work
         self._load_grace_s = load_grace_s
@@ -98,6 +102,7 @@ class Orchestrator:
         return {
             "queue": {"running": state.running, "waiting": state.waiting, "running_since_s": state.running_since_s},
             **self._hold_light(),
+            "handover": self._handover_json(),
             "work": self._work.active(),
             **self._status_body(gpus, self._collect(gpus), [gpu.uuid for gpu in gpus]),
         }
@@ -157,8 +162,9 @@ class Orchestrator:
 
     def _run_hold_worker(self) -> None:
         """Only this thread clears the cards for a hold, so there are never two clearings, and a hold
-        never waits for a thread that is about to end. It sleeps until the next look (``hold_check_interval_s``)
-        or until ``hold``, ``grant_hold`` or ``end_work`` wakes it. The wake is cleared before each look, so a wake during
+        never waits for a thread that is about to end. It sleeps until the next look (``hold_check_interval_s``,
+        or the end of a handover when that comes sooner) or until ``hold``, ``grant_hold``, ``release_hold`` or
+        ``end_work`` wakes it. The wake is cleared before each look, so a wake during
         the look or the clearing is not lost.
         Should it fail (writing the hold file, a bug), every hold would stay requested for ever while the
         service answers on: it ends the service loudly instead, systemd starts it again (Restart=on-failure)."""
@@ -174,25 +180,58 @@ class Orchestrator:
         """One look at the hold: clear the cards for a requested hold whose cards are free, or that is granted
         and no work of others runs,
         and make that very hold active with the result, however it ended (nobody retries behind the owner's
-        back), so whoever sees ``active`` finds the cards cleared or the reason why not. Returns how long to
-        sleep: the check interval while the hold waits, None until somebody wakes the worker."""
+        back), so whoever sees ``active`` finds the cards cleared or the reason why not. While a handover stands,
+        no hold turns active, except a granted one (the person decides). Returns how long to
+        sleep: the check interval while the hold waits (no longer than a handover stands), the rest of a handover
+        when no hold waits, None until somebody wakes the worker. The hold is read before the handover:
+        ``release`` sets the handover under the lock of the hold, so a hold requested after a release never
+        meets a handover that is not there yet."""
         hold = self._hold.get()
+        handover = self._hold.handover()
         if hold is None or hold.state != REQUESTED:
-            return None
+            return self._handover_left(handover, busy=[])
         if hold.granted_by is None:
-            if not self._cards_free(hold):
+            busy = self._busy_models(hold)
+            left = self._handover_left(handover, busy)
+            if left is not None:
+                return min(self._hold_check_interval_s, left)
+            if busy != []:  # a main model, or a model server that cannot say
                 return self._hold_check_interval_s
-        elif self._work.others_running(hold.owner):
-            return self._hold_check_interval_s  # a running answer is never broken off, not even by a click
+        else:
+            if handover is not None:
+                self._end_handover(handover, "granted")
+            if self._work.others_running(hold.owner):
+                return self._hold_check_interval_s  # a running answer is never broken off, not even by a click
         if self._hold.activate(hold, self._clear_all_cards(hold)) is None:
             print(f"[hold] the hold of {hold.owner!r} was released or granted while the cards were cleared for it",
                   file=sys.stderr, flush=True)
         return None
 
-    def _cards_free(self, hold: Hold) -> bool:
-        """Whether no model server has a main model loaded or loading (a model announced by a /free counts as
-        loading, compared by name only), except the model the hold asks for. Helpers and every other consumer do not count: clearing takes them along. A model server that cannot
-        answer (or nvidia-smi) counts as not free; that is reported once per change, not at every look."""
+    def _handover_left(self, handover: Handover | None, busy: list[str] | None) -> float | None:
+        """How many seconds the ``handover`` still stands; None when there is none or it ended just now: a main
+        model is loaded or loading (``busy``, as the hold worker sees it: the person began to load what the cards
+        were cleared for, from then on a new hold waits for that model like for any other), or the time is up (the
+        person may load nothing at all, and must not keep the cards for ever)."""
+        if handover is None:
+            return None
+        if busy:
+            self._end_handover(handover, "model loaded")
+            return None
+        left = handover.seconds_left()
+        if left <= 0:
+            self._end_handover(handover, "time is up")
+            return None
+        return left
+
+    def _end_handover(self, handover: Handover, reason: str) -> None:
+        if self._hold.end_handover(handover):
+            print(f"[hold] HANDOVER to {handover.for_!r} ended: {reason}", file=sys.stderr, flush=True)
+
+    def _busy_models(self, hold: Hold) -> list[str] | None:
+        """The main models that are loaded or loading on any model server (a model announced by a /free counts as
+        loading, compared by name only), except the model the hold asks for: the cards are free for ``hold``
+        when there are none. Helpers and every other consumer do not count: clearing takes them along. None when
+        a model server (or nvidia-smi) cannot answer; that is reported once per change, not at every look."""
         try:
             gpus = self._query()
             busy = [item for server in self._model_servers().values() for item in _main_models(server, hold, gpus)]
@@ -202,9 +241,9 @@ class Orchestrator:
             if note != self._cards_note:
                 print(f"[hold] {note}", file=sys.stderr, flush=True)
             self._cards_note = note
-            return False
+            return None
         self._cards_note = None
-        return not busy
+        return busy
 
     def _clear_all_cards(self, hold: Hold) -> dict[str, Any]:
         """Free every card for ``hold``; the model it asks for keeps running. Besides nvidia-smi, a consumer's
@@ -221,10 +260,14 @@ class Orchestrator:
     def release_hold(self, owner: str, force: bool) -> dict[str, Any]:
         """The owner lets go of the cards (a hold that is only requested is withdrawn). ``force`` lets
         go whoever holds them: for the person, when a program died holding the cards."""
-        released = self._hold.release(owner, force)
+        released = self._hold.release(owner, force, self._handover_grace_s)
         if released is not None and released.owner != owner:
             print(f"[hold] FORCED RELEASE by {owner!r} of the hold of {released.owner!r} "
                   f"({released.state}, {released.reason!r}, since {released.since})", file=sys.stderr, flush=True)
+        if released is not None and released.handover_for is not None:
+            print(f"[hold] HANDOVER to {released.handover_for!r} after {released.owner!r} let go "
+                  f"(until {self._handover_grace_s:g} s)", file=sys.stderr, flush=True)
+            self._hold_wake.set()  # the worker must wake at the end of the handover, also when no hold waits
         return {"hold": None}
 
     def begin_work(self, owner: str, reason: str, ttl_s: float) -> dict[str, Any]:
@@ -249,6 +292,10 @@ class Orchestrator:
             "held": _hold_json(hold, ACTIVE),
             "hold_requested": _hold_json(hold, REQUESTED),
         }
+
+    def _handover_json(self) -> dict[str, Any] | None:
+        handover = self._hold.handover()
+        return None if handover is None else handover.as_json()
 
     def loading(self) -> dict[str, Any]:
         """The traffic light: which big models are loading, and whether the cards are held. While a model

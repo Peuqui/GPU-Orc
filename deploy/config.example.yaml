@@ -30,6 +30,12 @@ free_timeout_s: 180
 # or loading on a model server); a new hold, a grant and the end of reported work wake it at once.
 # hold_check_interval_s: 30
 
+# When the owner of an active hold that somebody asked to end (POST /hold/end) lets go, the cards stay for that
+# person: no new hold turns active (a new one stays requested) until a main model is loaded or loading on a model
+# server (the person began to load theirs), but for at most this many seconds, so that somebody who loads nothing
+# does not keep the cards for ever. A grant (POST /hold/grant) overrides it. It lives in memory only.
+# handover_grace_s: 120
+
 consumers:
   # Services with the suites' common release API (GET /gpu/holders, POST /gpu/release).
   - name: stt-suite
