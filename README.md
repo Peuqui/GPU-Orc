@@ -119,9 +119,9 @@ The config is described in [deploy/config.example.yaml](deploy/config.example.ya
 ## Development
 
 ```bash
-python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
+python3 -m venv .venv && .venv/bin/pip install -e ".[test]"
 .venv/bin/python -m pytest
-.venv/bin/ruff check src tests && .venv/bin/mypy src tests
+ruff check src tests && mypy --python-executable .venv/bin/python src tests
 ```
 
 ## Star History
