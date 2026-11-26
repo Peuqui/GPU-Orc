@@ -15,7 +15,7 @@ from test_orchestrator import FAST, FakeService, Machine, model, server
 from gpu_orc.hold import HoldStore
 from gpu_orc.idle_run import run_if_idle
 from gpu_orc.orchestrator import Orchestrator, RequestError
-from gpu_orc.server import GpuOrcServer, authorization_error, parse_free_request
+from gpu_orc.server import GpuOrcServer, Handler, authorization_error, parse_free_request
 from gpu_orc.work import WorkStore
 
 
@@ -286,3 +286,19 @@ def test_run_if_idle_skips_the_command_when_gpu_orc_does_not_answer() -> None:
     ran: list[list[str]] = []
     assert run_if_idle("http://127.0.0.1:9", ["/sbin/reboot"], lambda command: ran.append(list(command))) == 3
     assert ran == []
+
+
+def test_a_caller_hanging_up_is_no_nvidia_smi_failure() -> None:
+    # 26.11.: llama-stats hung up while /status waited on a hanging consumer; the BrokenPipeError of the
+    # send was taken for an nvidia-smi failure and a second answer was sent into the closed socket.
+    handler = Handler.__new__(Handler)
+    sent: list[HTTPStatus] = []
+
+    def hung_up(status: HTTPStatus, body: Any) -> None:
+        sent.append(status)
+        raise BrokenPipeError(32, "Broken pipe")
+
+    handler._send = hung_up  # type: ignore[method-assign]
+    with pytest.raises(BrokenPipeError):
+        handler._answer(lambda: {"gpus": []})
+    assert sent == [HTTPStatus.OK]

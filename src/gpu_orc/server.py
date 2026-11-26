@@ -97,20 +97,25 @@ class Handler(BaseHTTPRequestHandler):
             self._send(HTTPStatus.NOT_FOUND, {"error": f"no such path: {self.path}"})
 
     def _answer(self, produce: Any) -> None:
+        # Only produce() inside the try: a caller that hangs up while the answer is sent raises
+        # BrokenPipeError (an OSError) in _send, which is no nvidia-smi failure.
+        status: HTTPStatus
+        body: Any
         try:
-            self._send(HTTPStatus.OK, produce())
+            status, body = HTTPStatus.OK, produce()
         except RequestError as error:
-            self._send(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+            status, body = HTTPStatus.BAD_REQUEST, {"error": str(error)}
         except HoldConflict as error:
-            self._send(HTTPStatus.CONFLICT, {
+            status, body = HTTPStatus.CONFLICT, {
                 "error": str(error), "owner": error.hold.owner, "state": error.hold.state, "since": error.hold.since,
-            })
+            }
         except NotFound as error:
-            self._send(HTTPStatus.NOT_FOUND, {"error": str(error)})
+            status, body = HTTPStatus.NOT_FOUND, {"error": str(error)}
         except ModelServerUnreachable as error:
-            self._send(HTTPStatus.BAD_GATEWAY, {"error": f"model server unreachable: {error}"})
+            status, body = HTTPStatus.BAD_GATEWAY, {"error": f"model server unreachable: {error}"}
         except (subprocess.SubprocessError, OSError) as error:
-            self._send(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": f"nvidia-smi failed: {error}"})
+            status, body = HTTPStatus.INTERNAL_SERVER_ERROR, {"error": f"nvidia-smi failed: {error}"}
+        self._send(status, body)
 
     def _authorized(self) -> bool:
         refusal = authorization_error(self.client_address[0], self.headers.get("Authorization", ""), self.server.token)
