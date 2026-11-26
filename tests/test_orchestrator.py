@@ -384,3 +384,18 @@ def test_clearing_for_a_helper_leaves_the_light_green() -> None:
     orchestrator.free(FreeRequest(reason="describer", model="small-vlm"))
     assert orchestrator.loading() == {"loading": [], "held": None, "hold_requested": None}
 
+
+
+def test_a_consumer_that_stops_answering_is_logged_once_per_change(capsys: pytest.CaptureFixture[str]) -> None:
+    # 26.11.: llama-stats showed "aifred antwortet nicht" now and then, but the journal had no trace of it.
+    stt = service("stt")
+    orchestrator = make(stt, server())
+    orchestrator.status()
+    stt.fail = True
+    orchestrator.status()
+    orchestrator.status()
+    stt.fail = False
+    orchestrator.status()
+    orchestrator.status()
+    lines = [line for line in capsys.readouterr().err.splitlines() if line.startswith("[consumer]")]
+    assert lines == ["[consumer] stt does not answer: stt is down", "[consumer] stt answers again"]

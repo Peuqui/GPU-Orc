@@ -83,6 +83,9 @@ class Orchestrator:
         self._load_grace_s = load_grace_s
         self._announced: dict[str, float] = {}  # model -> time.monotonic() until it counts as loading
         self._announced_lock = threading.Lock()
+        # consumer -> the error it last failed with; several requests look at the consumers at the same time
+        self._unreachable: dict[str, str] = {}
+        self._unreachable_lock = threading.Lock()
         self._free_timeout_s = free_timeout_s
         self._query = query
         self._verify = verify_settings
@@ -478,7 +481,24 @@ class Orchestrator:
                 holders[name] = future.result()
             except ConsumerError as error:
                 errors.append({"consumer": name, "detail": str(error)})
+        self._log_reachability({error["consumer"]: error["detail"] for error in errors})
         return _Report(holders, errors)
+
+    def _log_reachability(self, errors: Mapping[str, str]) -> None:
+        """Log when a consumer stops answering, fails another way or answers again: once per change, not at
+        every look (callers such as llama-stats ask /status every few seconds). So the journal tells afterwards
+        why a consumer was missing (restart = connection refused, hanging = timed out)."""
+        with self._unreachable_lock:
+            for name in self._consumers:
+                error = errors.get(name)
+                if error == self._unreachable.get(name):
+                    continue
+                if error is None:
+                    del self._unreachable[name]
+                    print(f"[consumer] {name} answers again", file=sys.stderr, flush=True)
+                else:
+                    self._unreachable[name] = error
+                    print(f"[consumer] {name} does not answer: {error}", file=sys.stderr, flush=True)
 
     def _unexplained(self, gpus: Sequence[Gpu], targets: frozenset[str], report: _Report) -> bool:
         """Whether a target card holds memory no reporting consumer accounts for (at least

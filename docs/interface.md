@@ -252,6 +252,8 @@ command too and exits 3 with a message on stderr. The weekly reboot is
   used memory. GPU-Orc never touches what nobody reports.
 - `errors` names consumers that could not say what they hold (`[{"consumer": …, "detail": …}]`);
   their holders are then missing from `holders`.
+  GPU-Orc logs each change on stderr, once and not at every look: `[consumer] <name> does not answer:
+  <detail>` (again when the detail changes) and `[consumer] <name> answers again`.
 - `500` when nvidia-smi fails.
 
 ### `POST /free` — free GPUs

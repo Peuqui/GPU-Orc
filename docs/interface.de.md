@@ -256,6 +256,8 @@ Neustart lautet `30 5 * * 1,3,5 root /home/mp/.local/share/gpu-orc/venv/bin/gpu-
   Halter ist es der ganze belegte Speicher. GPU-Orc fasst Unbekanntes nie an.
 - `errors` nennt Verbraucher, die nicht sagen konnten, was sie halten
   (`[{"consumer": …, "detail": …}]`); ihre Halter fehlen dann in `holders`.
+  GPU-Orc schreibt jeden Wechsel einmal auf stderr, nicht bei jedem Blick: `[consumer] <name> does not
+  answer: <detail>` (erneut, wenn sich der Grund ändert) und `[consumer] <name> answers again`.
 - `500`, wenn nvidia-smi scheitert.
 
 ### `POST /free` — Karten freiräumen
